@@ -1,0 +1,68 @@
+{
+  "type": "fulltext-index",
+  "name": "agent_memory_vector_idx",
+  "sourceType": "gocbcore",
+  "sourceName": "agent_memory",
+  "planParams": {
+    "maxPartitionsPerPIndex": 1024,
+    "indexPartitions": 1
+  },
+  "params": {
+    "doc_config": {
+      "mode": "scope.collection.type_field",
+      "docIdPrefixDelim": "",
+      "docIdRegexp": "",
+      "typeField": "kind"
+    },
+    "mapping": {
+      "default_mapping": { "enabled": false },
+      "index_dynamic": false,
+      "store_dynamic": false,
+      "type_field": "_type",
+      "types": {
+        "agent.episodes": {
+          "enabled": true,
+          "dynamic": false,
+          "properties": {
+            "embedding": {
+              "enabled": true,
+              "dynamic": false,
+              "fields": [
+                {
+                  "name": "embedding",
+                  "type": "vector",
+                  "dims": 4096,
+                  "similarity": "dot_product",
+                  "vector_index_optimized_for": "recall",
+                  "index": true
+                }
+              ]
+            },
+            "text": {
+              "enabled": true,
+              "dynamic": false,
+              "fields": [{ "name": "text", "type": "text", "analyzer": "en", "index": true, "store": true }]
+            },
+            "kind": {
+              "enabled": true,
+              "dynamic": false,
+              "fields": [{ "name": "kind", "type": "text", "index": true, "store": true }]
+            },
+            "migration_id": {
+              "enabled": true,
+              "dynamic": false,
+              "fields": [{ "name": "migration_id", "type": "text", "index": true, "store": true }]
+            },
+            "created_at": {
+              "enabled": true,
+              "dynamic": false,
+              "fields": [{ "name": "created_at", "type": "datetime", "index": true, "store": true }]
+            }
+          }
+        }
+      }
+    },
+    "store": { "indexType": "scorch", "segmentVersion": 16 }
+  },
+  "sourceParams": {}
+}

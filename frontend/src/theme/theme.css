@@ -1,0 +1,332 @@
+:root {
+  --cb-red: #ea2328;
+  --cb-red-dim: #7a1215;
+  --cb-red-bright: #ff4b4f;
+  --cb-teal: #00a7b5;
+  --cb-amber: #f2a900;
+  --cb-green: #2ecc71;
+  --cb-blue: #4c9aff;
+
+  --bg-0: #0b0e14;
+  --bg-1: #12161f;
+  --bg-2: #191e2a;
+  --bg-3: #232936;
+
+  --border-subtle: #2a3140;
+  --border-strong: #3a4256;
+
+  --text-primary: #e8eaed;
+  --text-secondary: #9aa4b2;
+  --text-muted: #6b7484;
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg-0);
+  color: var(--text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 14px;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+input,
+select,
+textarea {
+  font-family: inherit;
+  font-size: 13px;
+  background: var(--bg-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  padding: 8px 10px;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--cb-teal);
+}
+
+.cb-scrollbar::-webkit-scrollbar {
+  width: 10px;
+}
+
+.cb-scrollbar::-webkit-scrollbar-thumb {
+  background: var(--bg-3);
+  border-radius: 8px;
+}
+
+.cb-btn {
+  border: 1px solid var(--border-strong);
+  background: var(--bg-2);
+  color: var(--text-primary);
+  border-radius: var(--radius-sm);
+  padding: 9px 16px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.cb-btn:hover {
+  border-color: var(--cb-teal);
+}
+
+.cb-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.cb-btn-primary {
+  background: var(--cb-red);
+  border-color: var(--cb-red);
+  color: white;
+}
+
+.cb-btn-primary:hover {
+  background: var(--cb-red-bright);
+  border-color: var(--cb-red-bright);
+}
+
+.cb-card {
+  background: var(--bg-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 20px;
+}
+
+.cb-spin {
+  animation: cb-spin 0.9s linear infinite;
+  display: inline-block;
+  vertical-align: -2px;
+  margin-right: 4px;
+}
+
+@keyframes cb-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.cb-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+/* -- topology diagram --------------------------------------------------- */
+
+.topo-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.topo-card {
+  flex-shrink: 0;
+  width: 220px;
+  background: var(--bg-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.topo-dest {
+  width: 260px;
+}
+
+.topo-card-header {
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 700;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.topo-card-header--source {
+  background: linear-gradient(180deg, rgba(0, 167, 181, 0.22), rgba(0, 167, 181, 0.04));
+}
+
+.topo-card-header--dest {
+  background: linear-gradient(180deg, rgba(234, 35, 40, 0.26), rgba(234, 35, 40, 0.05));
+}
+
+.topo-card-body {
+  padding: 12px 14px 14px;
+}
+
+.topo-type-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+}
+
+.topo-sub {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+}
+
+.topo-muted {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 8px;
+}
+
+.topo-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.topo-dot--green {
+  background: var(--cb-green);
+  box-shadow: 0 0 4px var(--cb-green);
+}
+
+.topo-node-list {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.topo-node-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.topo-node-row .topo-dot {
+  margin-top: 5px;
+}
+
+.topo-node-host {
+  font-size: 12px;
+  font-weight: 600;
+  word-break: break-all;
+  line-height: 1.35;
+}
+
+.topo-node-services {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  margin-top: 1px;
+}
+
+.topo-connector {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 32px;
+  height: 2px;
+  align-self: center;
+  margin: 0 2px;
+  margin-top: 47px; /* aligns with the vertical center of the agent circle */
+}
+
+.topo-line {
+  position: absolute;
+  inset: 0;
+  border-radius: 2px;
+}
+
+.topo-flow-dot {
+  position: absolute;
+  top: 50%;
+  left: -4%;
+  width: 6px;
+  height: 6px;
+  margin-top: -3px;
+  border-radius: 50%;
+  opacity: 0;
+  animation: topo-flow 1.8s linear infinite;
+}
+
+@keyframes topo-flow {
+  0% {
+    left: -4%;
+    opacity: 0;
+  }
+  8% {
+    opacity: 1;
+  }
+  92% {
+    opacity: 1;
+  }
+  100% {
+    left: 100%;
+    opacity: 0;
+  }
+}
+
+.topo-agent {
+  flex-shrink: 0;
+  width: 110px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.topo-throughput {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--cb-green);
+  margin-bottom: 6px;
+  height: 15px;
+}
+
+.topo-circle {
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  border: 2px solid var(--border-strong);
+  background: var(--bg-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.topo-agent-label {
+  margin-top: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--text-primary);
+  line-height: 1.4;
+}

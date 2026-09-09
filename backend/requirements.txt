@@ -1,0 +1,16 @@
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+pydantic==2.10.4
+pydantic-settings==2.7.0
+couchbase==4.3.1
+requests==2.32.3
+httpx==0.28.1
+websockets==14.1
+python-multipart==0.0.20
+
+# -- source connectors --
+pymongo==4.10.1
+boto3==1.35.90
+redis==5.2.1
+cassandra-driver==3.29.2
+azure-cosmos==4.9.0

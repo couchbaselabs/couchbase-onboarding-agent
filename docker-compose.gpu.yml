@@ -1,0 +1,15 @@
+# Optional override: give qwen-service an NVIDIA GPU (Linux hosts with the NVIDIA
+# Container Toolkit installed only -- Docker Desktop on macOS/Windows cannot pass
+# through a GPU, so don't use this file there).
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+services:
+  qwen-service:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

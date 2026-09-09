@@ -1,0 +1,141 @@
+# Pinning the project name keeps every `docker compose` invocation scoped to the
+# same networks/volumes/containers regardless of what folder you extracted the
+# project into or renamed it to. Without this, Compose derives the project name
+# from the current directory name, so two differently-named copies of this
+# project can each spin up their own network -- and if you also fix container
+# names, a container from one copy can collide with the other on `up`.
+name: couchbase-onboarding-agent
+
+services:
+  # -- Agent memory: Couchbase Enterprise Edition with Vector Search --------
+  # This is NOT the migration destination -- it's the onboarding agent's own
+  # long-term memory (past validations, decisions, bottleneck findings). Your
+  # actual source databases and destination Couchbase cluster/Capella project are
+  # external and configured per-migration in the wizard, not here.
+  #
+  # Licensing: the `couchbase:enterprise-*` image is free to download and run for
+  # internal development/testing/evaluation (Couchbase's Enterprise Free
+  # license). It automatically converts to a paid Enterprise subscription if used
+  # in production or if you request Couchbase support -- see
+  # https://www.couchbase.com/legal/agreements/ for the exact terms. If that
+  # doesn't fit your use case, point MEMORY_CB_* at Couchbase Capella instead
+  # (also has native vector search, fully managed, and the backend code doesn't
+  # care which one it's talking to).
+  couchbase-memory:
+    image: couchbase:enterprise-7.6.2
+    restart: unless-stopped
+    ports:
+      - "8091-8096:8091-8096"
+      - "11210-11211:11210-11211"
+    volumes:
+      - couchbase_memory_data:/opt/couchbase/var
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8091/pools"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 30s
+    networks: [coa-net]
+
+  # One-shot bootstrap of the agent-memory bucket/scope/collection/indexes.
+  # Retries itself rather than requiring a manual re-run if it loses the race
+  # with Couchbase finishing its own startup -- and nothing else in the stack
+  # hard-blocks on this succeeding (see backend's depends_on below).
+  memory-init:
+    build:
+      context: .
+      dockerfile: scripts/Dockerfile.init
+    depends_on:
+      couchbase-memory:
+        condition: service_healthy
+    environment:
+      MEMORY_CB_HOST: couchbase-memory
+      MEMORY_CB_USERNAME: ${MEMORY_CB_USERNAME:-Administrator}
+      MEMORY_CB_PASSWORD: ${MEMORY_CB_PASSWORD:-change-me-strong-password}
+      MEMORY_CB_BUCKET: ${MEMORY_CB_BUCKET:-agent_memory}
+      MEMORY_CB_SCOPE: ${MEMORY_CB_SCOPE:-agent}
+      MEMORY_CB_COLLECTION: ${MEMORY_CB_COLLECTION:-episodes}
+    networks: [coa-net]
+    restart: on-failure:5
+
+  # -- Local LLM: Qwen 3, served via Ollama-compatible API ------------------
+  # Runs on CPU by default (works out of the box on macOS/Windows Docker Desktop,
+  # which don't support GPU passthrough anyway). To use an NVIDIA GPU on Linux:
+  #   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up
+  qwen-service:
+    build: ./qwen-service
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      - "11434:11434"
+    networks: [coa-net]
+    healthcheck:
+      # `ollama list` alone succeeds as soon as the server is up, which is well
+      # before entrypoint.sh finishes pulling the ~5GB qwen3:8b model on first
+      # boot -- that race let `backend` (and therefore the chat UI) come up
+      # "healthy" while Qwen was still downloading, so /api/chat calls during
+      # that window failed with a raw 500 instead of a clear "still starting"
+      # message. Require the model to actually be present before reporting healthy.
+      # Keep this in sync with QWEN_MODEL in qwen-service/Dockerfile (this is a
+      # docker-compose-level substitution, so changing the Dockerfile's ENV
+      # alone won't update it -- set QWEN_MODEL in .env too if you change the model).
+      test: ["CMD-SHELL", "ollama list | grep -q \"${QWEN_MODEL:-qwen3:8b}\""]
+      interval: 15s
+      timeout: 10s
+      retries: 60
+      start_period: 20s
+
+  # -- FastAPI backend / migration engine -----------------------------------
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      MEMORY_CB_CONNECTION_STRING: couchbase://couchbase-memory
+      QWEN_BASE_URL: http://qwen-service:11434
+    volumes:
+      - state_data:/data/state
+      - scratch_data:/data/scratch
+      # cbbackupmgr archives for Couchbase-to-Couchbase migrations (see
+      # core/couchbase_native.py) -- one subdirectory per migration ID, unlike
+      # scratch_data which is scoped per-container-batch working files.
+      - cbbackupmgr_archives:/data/cbbackupmgr-archives
+    ports:
+      - "8000:8000"
+    depends_on:
+      couchbase-memory:
+        condition: service_healthy
+      qwen-service:
+        condition: service_healthy
+    networks: [coa-net]
+
+  # -- React dark-mode UI ----------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      # Vite bakes these into the static JS bundle at build time -- override via
+      # .env if you're accessing the UI from something other than localhost, and
+      # if you do, also add that origin to the backend's CORS_ORIGINS.
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000}
+        VITE_WS_BASE_URL: ${VITE_WS_BASE_URL:-ws://localhost:8000}
+    restart: unless-stopped
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+    networks: [coa-net]
+
+networks:
+  coa-net:
+    driver: bridge
+
+volumes:
+  couchbase_memory_data:
+  ollama_data:
+  state_data:
+  scratch_data:
+  cbbackupmgr_archives:
