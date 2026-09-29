@@ -13,7 +13,7 @@ from app.core import runner
 from app.core.connectors.registry import get_connector
 from app.core.migration_engine import MigrationEngine, uses_xdcr
 from app.core.store import MigrationStore
-from app.models.enums import COUCHBASE_SOURCE_TYPES, CONTINUOUS_STRATEGIES, MigrationPhase, SourceType
+from app.models.enums import CONTINUOUS_STRATEGIES, COUCHBASE_SOURCE_TYPES, MigrationPhase, SourceType
 from app.models.schemas import SourceConnectionConfig
 from app.websocket.progress import broadcast_progress
 from app.websocket.progress import router as ws_router

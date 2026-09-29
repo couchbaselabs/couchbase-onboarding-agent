@@ -1,0 +1,37 @@
+name: Bug report
+description: Something doesn't work as documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Don't paste credentials, connection strings or production data. For security issues, see SECURITY.md.
+  - type: dropdown
+    id: source
+    attributes:
+      label: Source
+      options: [MongoDB, DynamoDB, Redis, Cassandra, Cosmos DB, Couchbase CE, Couchbase EE, Couchbase Capella, Not source-specific]
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      options: [One-time migration, Continuous replication, Bulk copy + continuous sync, Rollback, Fallback sync, Not applicable]
+  - type: input
+    id: version
+    attributes:
+      label: App version / commit, and deployment (Compose or Helm)
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines (from the migration's Log panel or the backend container)
+      render: text

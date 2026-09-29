@@ -1,0 +1,131 @@
+{{- if .Values.memory.bundled.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "coa.memoryService" . }}
+  labels:
+    {{- include "coa.labels" . | nindent 4 }}
+    app.kubernetes.io/component: memory
+spec:
+  # Headless: the Couchbase SDK needs to reach the node by the name it advertises.
+  clusterIP: None
+  selector:
+    {{- include "coa.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: memory
+  ports:
+    {{- range $name, $port := dict "mgmt" 8091 "views" 8092 "query" 8093 "fts" 8094 "kv" 11210 }}
+    - name: {{ $name }}
+      port: {{ $port }}
+    {{- end }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "coa.memoryService" . }}
+  labels:
+    {{- include "coa.labels" . | nindent 4 }}
+    app.kubernetes.io/component: memory
+spec:
+  serviceName: {{ include "coa.memoryService" . }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "coa.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: memory
+  template:
+    metadata:
+      labels:
+        {{- include "coa.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: memory
+    spec:
+      containers:
+        - name: couchbase
+          image: "{{ .Values.memory.bundled.image.repository }}:{{ .Values.memory.bundled.image.tag }}"
+          imagePullPolicy: {{ .Values.memory.bundled.image.pullPolicy }}
+          ports:
+            - { name: mgmt, containerPort: 8091 }
+            - { name: views, containerPort: 8092 }
+            - { name: query, containerPort: 8093 }
+            - { name: fts, containerPort: 8094 }
+            - { name: kv, containerPort: 11210 }
+          readinessProbe:
+            tcpSocket:
+              port: mgmt
+            periodSeconds: 10
+          volumeMounts:
+            - name: data
+              mountPath: /opt/couchbase/var
+          resources:
+            {{- toYaml .Values.memory.bundled.resources | nindent 12 }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- with .Values.memory.bundled.persistence.storageClassName }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.memory.bundled.persistence.size }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "coa.fullname" . }}-memory-init
+  labels:
+    {{- include "coa.labels" . | nindent 4 }}
+    app.kubernetes.io/component: memory-init
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.memory.init.backoffLimit }}
+  template:
+    metadata:
+      labels:
+        {{- include "coa.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: memory-init
+    spec:
+      restartPolicy: OnFailure
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: init
+          image: {{ include "coa.image" (list . .Values.memory.init.image) }}
+          imagePullPolicy: {{ .Values.memory.init.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          env:
+            # Pod DNS name of the single StatefulSet member.
+            - name: MEMORY_CB_HOST
+              value: {{ printf "%s-0.%s" (include "coa.memoryService" .) (include "coa.memoryService" .) | quote }}
+            - name: MEMORY_CB_USERNAME
+              value: {{ .Values.memory.username | quote }}
+            - name: MEMORY_CB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "coa.secretName" . }}
+                  key: MEMORY_CB_PASSWORD
+            - name: MEMORY_CB_BUCKET
+              value: {{ .Values.memory.bucket | quote }}
+            - name: MEMORY_CB_SCOPE
+              value: {{ .Values.memory.scope | quote }}
+            - name: MEMORY_CB_COLLECTION
+              value: {{ .Values.memory.collection | quote }}
+            - name: MEMORY_CB_RAM_QUOTA_MB
+              value: {{ .Values.memory.bundled.ramQuotaMB | quote }}
+            - name: MEMORY_CB_INDEX_RAM_QUOTA_MB
+              value: {{ .Values.memory.bundled.indexRamQuotaMB | quote }}
+            - name: MEMORY_CB_FTS_RAM_QUOTA_MB
+              value: {{ .Values.memory.bundled.ftsRamQuotaMB | quote }}
+{{- end }}

@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 class MigrationStore:
-    _instance: "MigrationStore | None" = None
+    _instance: MigrationStore | None = None
 
     def __init__(self) -> None:
         self.settings = get_settings()
@@ -37,7 +37,7 @@ class MigrationStore:
         self._load()
 
     @classmethod
-    def instance(cls) -> "MigrationStore":
+    def instance(cls) -> MigrationStore:
         if cls._instance is None:
             cls._instance = MigrationStore()
         return cls._instance

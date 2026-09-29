@@ -10,7 +10,12 @@ from fastapi import APIRouter, HTTPException
 from app.core.connectors.base import SourceConnectorError
 from app.core.connectors.registry import get_connector
 from app.core.couchbase_client import CouchbaseClientError, CouchbaseClusterClient
-from app.models.schemas import CouchbaseConnectionConfig, CouchbaseTopologySnapshot, SourceConnectionConfig, SourceTopologySnapshot
+from app.models.schemas import (
+    CouchbaseConnectionConfig,
+    CouchbaseTopologySnapshot,
+    SourceConnectionConfig,
+    SourceTopologySnapshot,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()

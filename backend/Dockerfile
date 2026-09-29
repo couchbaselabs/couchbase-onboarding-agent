@@ -64,9 +64,19 @@ COPY app ./app
 COPY entrypoint.sh .
 RUN chmod +x entrypoint.sh
 
+# Run as an unprivileged user. The /data directories are created here so named
+# Docker volumes inherit their ownership; on Kubernetes the chart sets fsGroup.
+RUN groupadd --system --gid 10001 app && \
+    useradd --system --uid 10001 --gid app --home-dir /app --no-create-home app && \
+    mkdir -p /data/state /data/scratch /data/cbbackupmgr-archives && \
+    chown -R app:app /data
+USER 10001
+
 ENV PYTHONUNBUFFERED=1
 
 EXPOSE 8000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=4)" || exit 1
 
 ENTRYPOINT ["./entrypoint.sh"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -22,14 +22,13 @@ pattern the other four connectors follow).
 from __future__ import annotations
 
 import asyncio
+import datetime as _dt
+import decimal
 import logging
 import queue
 import threading
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
-
-import datetime as _dt
-import decimal
 
 from bson import Binary, ObjectId, Timestamp
 from bson.decimal128 import Decimal128
@@ -44,7 +43,6 @@ from app.core.connectors.base import (
     SourceDocument,
     heartbeat,
 )
-from app.core.tls import ca_file_for
 from app.core.connectors.util import (
     IDLE,
     apply_type_hints,
@@ -54,6 +52,7 @@ from app.core.connectors.util import (
     make_key,
     parse_iso_datetime,
 )
+from app.core.tls import ca_file_for
 from app.models.enums import CdcMethod, SourceType
 from app.models.schemas import SourceConnectionConfig, SourceContainerStats, SourceTopologySnapshot
 

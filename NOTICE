@@ -1,0 +1,19 @@
+Couchbase Onboarding Agent
+Copyright (c) 2026 Couchbase, Inc.
+Licensed under the MIT License (see LICENSE).
+
+This project uses third-party software, each under its own license:
+
+- Python dependencies: backend/requirements.txt (FastAPI, Pydantic, the Couchbase Python SDK, PyMongo,
+  boto3, redis-py, the DataStax Cassandra driver, azure-cosmos, cryptography, ...).
+- JavaScript dependencies: frontend/package.json (React, React Router, Recharts, Zustand, lucide-react, ...).
+- Ollama (MIT) serves the local model; the default model, Qwen3 8B, is distributed by the Qwen team under the
+  Apache License 2.0.
+
+Couchbase Server Enterprise Edition
+- The backend image copies the `cbbackupmgr` tool (and its libraries) from the official
+  `couchbase:enterprise` Docker image, and the evaluation agent-memory service runs that image. Couchbase
+  Server Enterprise Edition is licensed by Couchbase, Inc. under separate terms: it is free for development,
+  testing and evaluation, and production use requires a subscription. See
+  https://www.couchbase.com/legal/agreements/. Nothing in this repository's MIT license grants rights to
+  Couchbase Server Enterprise Edition.

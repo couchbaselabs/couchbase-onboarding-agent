@@ -340,7 +340,7 @@ class CassandraConnector(SourceConnector):
                 since = watermark[table]
                 max_seen = since
 
-                def _produce(q: queue.Queue, table=table, wt_cols=wt_cols) -> None:
+                def _produce(q: queue.Queue, table=table, wt_cols=wt_cols, since=since) -> None:
                     try:
                         wt_select = ", ".join(f'WRITETIME("{c}") AS "__cb_wt{i}"' for i, c in enumerate(wt_cols))
                         stmt = session.prepare(f'SELECT *, {wt_select} FROM "{table}"')

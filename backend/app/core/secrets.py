@@ -23,13 +23,13 @@ _PREFIX = "enc:v1:"
 
 
 class SecretBox:
-    _instance: "SecretBox | None" = None
+    _instance: SecretBox | None = None
 
     def __init__(self, key: bytes):
         self._fernet = Fernet(key)
 
     @classmethod
-    def instance(cls) -> "SecretBox":
+    def instance(cls) -> SecretBox:
         if cls._instance is None:
             cls._instance = SecretBox(_load_or_create_key())
         return cls._instance

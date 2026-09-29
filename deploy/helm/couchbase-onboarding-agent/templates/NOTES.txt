@@ -1,0 +1,32 @@
+Couchbase Onboarding Agent {{ .Chart.AppVersion }} is installed.
+
+1. Get the API token (the UI asks for it on first visit):
+
+   kubectl get secret {{ include "coa.secretName" . }} -n {{ .Release.Namespace }} \
+     -o jsonpath='{.data.API_AUTH_TOKEN}' | base64 -d; echo
+
+2. Open the UI:
+{{- if .Values.ingress.enabled }}
+{{- range .Values.ingress.hosts }}
+   http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}/
+{{- end }}
+{{- else }}
+   kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "coa.frontendService" . }} 8080:{{ .Values.frontend.service.port }}
+   then browse to http://localhost:8080
+{{- end }}
+
+3. Back up the state volume ({{ include "coa.fullname" . }}-state) and the
+   STATE_ENCRYPTION_KEY in {{ include "coa.secretName" . }} together: the key
+   decrypts the source/destination credentials stored with each migration.
+{{- if .Values.memory.bundled.enabled }}
+
+Note: the bundled agent-memory node runs the couchbase:enterprise image, which
+is free for development and evaluation only. For production, set
+memory.bundled.enabled=false and point memory.external.* at a licensed cluster
+or Capella.
+{{- end }}
+{{- if and .Values.llm.enabled (not .Values.llm.externalUrl) }}
+
+The first start downloads the {{ .Values.llm.model }} model (several GB); the
+assistant panel reports "waiting" until it's ready.
+{{- end }}

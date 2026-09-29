@@ -1,0 +1,190 @@
+{{- $fullname := include "coa.fullname" . -}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $fullname }}-state
+  labels:
+    {{- include "coa.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- with .Values.backend.persistence.state.storageClassName }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.backend.persistence.state.size }}
+{{- if and .Values.backend.persistence.archives.enabled (not .Values.backend.persistence.archives.existingClaim) }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $fullname }}-archives
+  labels:
+    {{- include "coa.labels" . | nindent 4 }}
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- with .Values.backend.persistence.archives.storageClassName }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.backend.persistence.archives.size }}
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-backend
+  labels:
+    {{- include "coa.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backend
+spec:
+  replicas: {{ .Values.backend.replicaCount }}
+  # One writer on a ReadWriteOnce volume: stop the old pod before starting the new one.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "coa.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: backend
+  template:
+    metadata:
+      labels:
+        {{- include "coa.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: backend
+      annotations:
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.backend.podSecurityContext | nindent 8 }}
+      # Give running syncs time to persist their checkpoint on shutdown.
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: backend
+          image: {{ include "coa.image" (list . .Values.backend.image) }}
+          imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.backend.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: ENVIRONMENT
+              value: kubernetes
+            - name: LOG_LEVEL
+              value: {{ .Values.backend.logLevel | quote }}
+            - name: QWEN_BASE_URL
+              value: {{ include "coa.llmUrl" . | quote }}
+            - name: QWEN_MODEL_NAME
+              value: {{ .Values.llm.model | quote }}
+            - name: QWEN_EMBEDDING_MODEL_NAME
+              value: {{ .Values.llm.embeddingModel | quote }}
+            - name: MEMORY_CB_CONNECTION_STRING
+              value: {{ include "coa.memoryConnectionString" . | quote }}
+            - name: MEMORY_CB_USERNAME
+              value: {{ .Values.memory.username | quote }}
+            - name: MEMORY_CB_BUCKET
+              value: {{ .Values.memory.bucket | quote }}
+            - name: MEMORY_CB_SCOPE
+              value: {{ .Values.memory.scope | quote }}
+            - name: MEMORY_CB_COLLECTION
+              value: {{ .Values.memory.collection | quote }}
+            - name: CAPELLA_ORG_ID
+              value: {{ .Values.backend.capellaOrgId | quote }}
+            - name: AUTO_RESUME_ON_STARTUP
+              value: {{ .Values.backend.sync.autoResumeOnStartup | quote }}
+            - name: CDC_BATCH_SIZE
+              value: {{ .Values.backend.sync.cdcBatchSize | quote }}
+            - name: CDC_MAX_CONSECUTIVE_FAILURES
+              value: {{ .Values.backend.sync.cdcMaxConsecutiveFailures | quote }}
+            - name: RECONCILE_MAX_DELETE_FRACTION
+              value: {{ .Values.backend.sync.reconcileMaxDeleteFraction | quote }}
+            - name: CUTOVER_DRAIN_TIMEOUT_S
+              value: {{ .Values.backend.sync.cutoverDrainTimeoutS | quote }}
+            - name: VERIFY_SOURCE_COUNTS
+              value: {{ .Values.backend.sync.verifySourceCounts | quote }}
+            {{- range $key := list "API_AUTH_TOKEN" "STATE_ENCRYPTION_KEY" "MEMORY_CB_PASSWORD" "CAPELLA_API_TOKEN" }}
+            - name: {{ $key }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "coa.secretName" $ }}
+                  key: {{ $key }}
+                  optional: {{ eq $key "CAPELLA_API_TOKEN" }}
+            {{- end }}
+            {{- with .Values.backend.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - name: state
+              mountPath: /data/state
+            - name: scratch
+              mountPath: /data/scratch
+            - name: archives
+              mountPath: /data/cbbackupmgr-archives
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.backend.resources | nindent 12 }}
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: {{ default (printf "%s-state" $fullname) .Values.backend.persistence.state.existingClaim }}
+        - name: scratch
+          emptyDir:
+            sizeLimit: {{ .Values.backend.persistence.scratchSizeLimit }}
+        - name: tmp
+          emptyDir: {}
+        - name: archives
+          {{- if .Values.backend.persistence.archives.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ default (printf "%s-archives" $fullname) .Values.backend.persistence.archives.existingClaim }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+      {{- with .Values.backend.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.backend.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.backend.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "coa.backendService" . }}
+  labels:
+    {{- include "coa.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backend
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "coa.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: backend
+  ports:
+    - name: http
+      port: {{ .Values.backend.service.port }}
+      targetPort: http

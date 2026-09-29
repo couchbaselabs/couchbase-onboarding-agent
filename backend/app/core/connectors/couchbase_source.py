@@ -59,8 +59,6 @@ from couchbase.n1ql import QueryScanConsistency
 from couchbase.options import ClusterOptions, QueryOptions
 
 from app.config import get_settings
-
-from app.core.tls import requests_verify, sdk_authenticator, sdk_connection_string
 from app.core.connectors.base import (
     CdcCapabilities,
     ChangeEvent,
@@ -70,6 +68,7 @@ from app.core.connectors.base import (
     heartbeat,
 )
 from app.core.connectors.util import SeenRecently
+from app.core.tls import requests_verify, sdk_authenticator, sdk_connection_string
 from app.models.enums import CdcMethod, SourceType
 from app.models.schemas import SourceConnectionConfig, SourceContainerStats, SourceTopologySnapshot
 

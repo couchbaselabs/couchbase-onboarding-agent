@@ -1,0 +1,210 @@
+# Default values for couchbase-onboarding-agent.
+#
+# Images are published to GHCR by the repository's release workflow
+# (.github/workflows/release.yml) for every version tag. To build your own,
+# see "Building images" in this chart's README and set global.imageRegistry
+# or each image.repository.
+
+global:
+  # Registry for the three images built from this repository (backend, frontend,
+  # memory-init). Point it at your own registry to use images you built.
+  imageRegistry: ghcr.io
+  imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+# ---------------------------------------------------------------------------
+# Secrets. Leave a value empty to have the chart generate it on first install
+# and keep it across upgrades, or point existingSecret at a Secret you manage
+# (keys: API_AUTH_TOKEN, STATE_ENCRYPTION_KEY, MEMORY_CB_PASSWORD,
+# CAPELLA_API_TOKEN).
+# ---------------------------------------------------------------------------
+secrets:
+  existingSecret: ""
+  # Bearer token for the API and UI. Read it back after install with the
+  # command printed in NOTES.txt.
+  apiAuthToken: ""
+  # Fernet key (44 chars, urlsafe base64) that encrypts stored credentials.
+  # Losing it means re-entering the credentials of in-flight migrations.
+  stateEncryptionKey: ""
+  capellaApiToken: ""
+
+backend:
+  image:
+    repository: couchbaselabs/couchbase-onboarding-agent-backend
+    tag: ""            # defaults to .Chart.AppVersion
+    pullPolicy: IfNotPresent
+  # The migration store is a single-writer file on a ReadWriteOnce volume and
+  # background sync tasks live in the process: keep this at 1.
+  replicaCount: 1
+  logLevel: INFO
+  capellaOrgId: ""
+  # Continuous sync / rollback tuning (backend/app/config.py). Any setting can
+  # also be passed through extraEnv.
+  sync:
+    autoResumeOnStartup: true
+    cdcBatchSize: 200
+    cdcMaxConsecutiveFailures: 20
+    reconcileMaxDeleteFraction: "0.2"
+    cutoverDrainTimeoutS: 120
+    verifySourceCounts: true
+  persistence:
+    # Encrypted migration records, checkpoints, fallback state.
+    state:
+      size: 2Gi
+      storageClassName: ""
+      existingClaim: ""
+    # cbbackupmgr archives for Couchbase-to-Couchbase bulk copies. Size for the
+    # largest Couchbase source bucket you'll migrate.
+    archives:
+      enabled: true
+      size: 50Gi
+      storageClassName: ""
+      existingClaim: ""
+    # Scratch space (reconciliation key sets, CA files). emptyDir by default.
+    scratchSizeLimit: 20Gi
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "4"
+      memory: 4Gi
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: ["ALL"]
+  service:
+    port: 8000
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  extraEnv: []
+
+frontend:
+  image:
+    repository: couchbaselabs/couchbase-onboarding-agent-frontend
+    tag: ""
+    pullPolicy: IfNotPresent
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 101
+    runAsGroup: 101
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: ["ALL"]
+  service:
+    type: ClusterIP
+    port: 80
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations:
+    # Websockets carry live progress; keep idle connections open.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+  hosts:
+    - host: onboarding.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: onboarding-tls
+  #    hosts: [onboarding.example.com]
+
+# ---------------------------------------------------------------------------
+# Local LLM for the assistant panel (any Ollama-compatible API). Either run
+# Ollama in the cluster (enabled: true) or point externalUrl at one you have.
+# ---------------------------------------------------------------------------
+llm:
+  enabled: true
+  externalUrl: ""
+  model: qwen3:8b
+  embeddingModel: qwen3:8b
+  image:
+    repository: ollama/ollama
+    tag: "0.6.8"
+    pullPolicy: IfNotPresent
+  persistence:
+    size: 20Gi
+    storageClassName: ""
+  resources:
+    requests:
+      cpu: "1"
+      memory: 6Gi
+    limits:
+      cpu: "4"
+      memory: 12Gi
+  # e.g. {"nvidia.com/gpu": 1} under resources.limits plus a nodeSelector/toleration for GPU nodes.
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# ---------------------------------------------------------------------------
+# Agent memory (the assistant's recall of past migrations). Not a migration
+# source or destination.
+#
+# bundled.enabled runs a single Couchbase Enterprise Edition node for
+# evaluation. The couchbase:enterprise image is free for development/testing
+# only (Couchbase Enterprise Free license) -- for production, set
+# bundled.enabled=false and point external.* at a cluster you're licensed for
+# or at Capella.
+# ---------------------------------------------------------------------------
+memory:
+  username: Administrator
+  password: ""          # generated when empty (bundled) -- required for external
+  bucket: agent_memory
+  scope: agent
+  collection: episodes
+  external:
+    connectionString: ""   # e.g. couchbases://cb.example.com
+  bundled:
+    enabled: true
+    image:
+      repository: couchbase
+      tag: enterprise-7.6.2
+      pullPolicy: IfNotPresent
+    ramQuotaMB: 1024
+    indexRamQuotaMB: 256
+    ftsRamQuotaMB: 256
+    persistence:
+      size: 10Gi
+      storageClassName: ""
+    resources:
+      requests:
+        cpu: 500m
+        memory: 2Gi
+      limits:
+        cpu: "2"
+        memory: 4Gi
+  # One-shot bucket/scope/collection/index setup (scripts/init_memory.py), run
+  # as a post-install/post-upgrade hook when bundled.enabled is true.
+  init:
+    image:
+      repository: couchbaselabs/couchbase-onboarding-agent-memory-init
+      tag: ""
+      pullPolicy: IfNotPresent
+    backoffLimit: 6

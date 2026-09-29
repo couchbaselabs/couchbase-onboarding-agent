@@ -49,8 +49,8 @@ from app.core.connectors.base import (
     SourceDocument,
     heartbeat,
 )
-from app.core.tls import ca_file_for
 from app.core.connectors.util import decode_binary, json_safe, make_key
+from app.core.tls import ca_file_for
 from app.models.enums import CdcMethod, SourceType
 from app.models.schemas import SourceConnectionConfig, SourceContainerStats, SourceTopologySnapshot
 
@@ -131,7 +131,7 @@ class _DirtyKeyTracker:
     async def wait(self, timeout: float) -> None:
         try:
             await asyncio.wait_for(self._changed.wait(), timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass
 
     async def close(self) -> None:
@@ -304,7 +304,7 @@ class RedisConnector(SourceConnector):
         values = await pipe.execute() if readable else []
 
         out: dict[str, dict | None] = {k: None for k in keys}
-        for key, raw in zip(readable, values):
+        for key, raw in zip(readable, values, strict=True):
             kind = kinds[key]
             if raw is None:
                 continue

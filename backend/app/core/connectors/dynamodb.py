@@ -21,15 +21,14 @@ Amazon DynamoDB source connector.
 from __future__ import annotations
 
 import asyncio
+import datetime as _dt
+import decimal
 import logging
 import queue
 import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
-
-import datetime as _dt
-import decimal
 
 import boto3
 from boto3.dynamodb.types import Binary as DynamoBinary

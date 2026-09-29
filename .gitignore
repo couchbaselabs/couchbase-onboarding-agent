@@ -36,6 +36,7 @@ frontend/dist/
 
 # Local runtime state
 /data/
+.data/
 *.sqlite
 *.sqlite-journal
 

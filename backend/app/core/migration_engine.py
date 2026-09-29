@@ -75,8 +75,8 @@ from app.core.targets import target_map
 from app.core.validator import MigrationValidator
 from app.memory.couchbase_memory import AgentMemoryStore
 from app.models.enums import (
-    COUCHBASE_SOURCE_TYPES,
     CONTINUOUS_STRATEGIES,
+    COUCHBASE_SOURCE_TYPES,
     CdcMethod,
     MigrationPhase,
     MigrationStrategy,

@@ -245,7 +245,7 @@ class SeenRecently:
     def __init__(self, limit: int = 200_000):
         from collections import OrderedDict
 
-        self._items: "OrderedDict[tuple[str, int], None]" = OrderedDict()
+        self._items: OrderedDict[tuple[str, int], None] = OrderedDict()
         self._limit = limit
 
     def add(self, item: tuple[str, int]) -> bool:

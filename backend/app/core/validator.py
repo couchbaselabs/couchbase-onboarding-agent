@@ -10,11 +10,10 @@ failed WARNING checks don't.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from uuid import UUID
-
-import asyncio
 
 from app.core.capella_client import CapellaClient
 from app.core.connectors.base import SourceConnectorError

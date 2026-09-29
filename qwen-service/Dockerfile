@@ -2,9 +2,11 @@
 # /api/embeddings) so the onboarding agent's reasoning and vector-memory embeddings
 # never leave the Docker network -- important here specifically because this app
 # routinely holds credentials for five different production databases at once.
-FROM ollama/ollama:latest
+FROM ollama/ollama:0.6.8
 
 ENV OLLAMA_HOST=0.0.0.0:11434
+# Overridden at runtime by docker-compose (QWEN_MODEL_NAME in .env), so the pulled
+# model always matches what the backend asks for.
 ENV QWEN_MODEL=qwen3:8b
 
 # Trust an optional corporate/proxy root CA before entrypoint.sh pulls the model at

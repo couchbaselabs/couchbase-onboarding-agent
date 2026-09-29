@@ -40,7 +40,7 @@ FALLBACK_SCAN_LIMIT = 500
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
     if not a or not b or len(a) != len(b):
         return 0.0
-    dot = sum(x * y for x, y in zip(a, b))
+    dot = sum(x * y for x, y in zip(a, b, strict=True))
     norm_a = math.sqrt(sum(x * x for x in a))
     norm_b = math.sqrt(sum(x * x for x in b))
     if norm_a == 0 or norm_b == 0:
@@ -51,7 +51,7 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
 class AgentMemoryStore:
     """Singleton-ish accessor for the agent's long-term memory in Couchbase."""
 
-    _instance: "AgentMemoryStore | None" = None
+    _instance: AgentMemoryStore | None = None
 
     def __init__(self) -> None:
         self.settings = get_settings()
@@ -59,7 +59,7 @@ class AgentMemoryStore:
         self._vector_search_unavailable = False
 
     @classmethod
-    def instance(cls) -> "AgentMemoryStore":
+    def instance(cls) -> AgentMemoryStore:
         if cls._instance is None:
             cls._instance = AgentMemoryStore()
         return cls._instance

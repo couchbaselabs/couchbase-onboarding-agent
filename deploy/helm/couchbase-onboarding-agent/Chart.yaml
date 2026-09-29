@@ -1,0 +1,24 @@
+apiVersion: v2
+name: couchbase-onboarding-agent
+description: >-
+  Couchbase Onboarding Agent - migrate MongoDB, DynamoDB, Redis, Cassandra,
+  Cosmos DB or another Couchbase cluster into Couchbase Server or Capella with
+  bulk copy, continuous sync, rollback and post-cutover fallback.
+type: application
+version: 0.1.0
+appVersion: "1.1.0"
+home: https://github.com/couchbaselabs/couchbase-onboarding-agent
+sources:
+  - https://github.com/couchbaselabs/couchbase-onboarding-agent
+keywords:
+  - couchbase
+  - migration
+  - cdc
+  - mongodb
+  - dynamodb
+  - cassandra
+  - cosmosdb
+  - redis
+maintainers:
+  - name: Couchbase Labs
+    url: https://github.com/couchbaselabs

@@ -1,0 +1,105 @@
+{{- if and .Values.llm.enabled (not .Values.llm.externalUrl) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "coa.fullname" . }}-llm
+  labels:
+    {{- include "coa.labels" . | nindent 4 }}
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- with .Values.llm.persistence.storageClassName }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.llm.persistence.size }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "coa.fullname" . }}-llm
+  labels:
+    {{- include "coa.labels" . | nindent 4 }}
+    app.kubernetes.io/component: llm
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "coa.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: llm
+  template:
+    metadata:
+      labels:
+        {{- include "coa.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: llm
+    spec:
+      containers:
+        - name: ollama
+          image: "{{ .Values.llm.image.repository }}:{{ .Values.llm.image.tag }}"
+          imagePullPolicy: {{ .Values.llm.image.pullPolicy }}
+          env:
+            - name: OLLAMA_HOST
+              value: "0.0.0.0:11434"
+            - name: MODEL
+              value: {{ .Values.llm.model | quote }}
+          # Serve, and pull the model on first start (cached on the volume).
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              ollama serve &
+              until ollama list >/dev/null 2>&1; do sleep 1; done
+              ollama list | grep -q "$MODEL" || ollama pull "$MODEL"
+              wait
+          ports:
+            - name: http
+              containerPort: 11434
+          readinessProbe:
+            exec:
+              command: ["/bin/sh", "-c", "ollama list | grep -q \"$MODEL\""]
+            periodSeconds: 15
+            failureThreshold: 240
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          volumeMounts:
+            - name: models
+              mountPath: /root/.ollama
+          resources:
+            {{- toYaml .Values.llm.resources | nindent 12 }}
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: {{ include "coa.fullname" . }}-llm
+      {{- with .Values.llm.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.llm.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.llm.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "coa.llmService" . }}
+  labels:
+    {{- include "coa.labels" . | nindent 4 }}
+    app.kubernetes.io/component: llm
+spec:
+  selector:
+    {{- include "coa.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: llm
+  ports:
+    - name: http
+      port: 11434
+      targetPort: http
+{{- end }}

@@ -11,11 +11,11 @@ import re
 from datetime import timedelta
 from typing import Any
 
+import requests
 from couchbase.cluster import Cluster
-from couchbase.exceptions import CouchbaseException, ScopeAlreadyExistsException, CollectionAlreadyExistsException
+from couchbase.exceptions import CollectionAlreadyExistsException, CouchbaseException, ScopeAlreadyExistsException
 from couchbase.management.collections import CollectionSpec
 from couchbase.options import ClusterOptions
-import requests
 
 from app.core.tls import requests_verify, sdk_authenticator, sdk_connection_string
 from app.models.schemas import CouchbaseConnectionConfig, CouchbaseNode, CouchbaseTopologySnapshot
