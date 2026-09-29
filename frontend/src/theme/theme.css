@@ -1,4 +1,12 @@
-:root {
+/* Theme tokens. Dark is the default; light is selected with
+   <html data-theme="light">. The attribute is set before first paint by the
+   inline script in index.html (system preference unless the user picked one),
+   and kept in sync by src/theme/theme.ts. Components use only these variables,
+   never raw colors, so both themes stay consistent. */
+:root,
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
   --cb-red: #ea2328;
   --cb-red-dim: #7a1215;
   --cb-red-bright: #ff4b4f;
@@ -6,6 +14,7 @@
   --cb-amber: #f2a900;
   --cb-green: #2ecc71;
   --cb-blue: #4c9aff;
+  --on-accent: #ffffff;
 
   --bg-0: #0b0e14;
   --bg-1: #12161f;
@@ -17,11 +26,46 @@
 
   --text-primary: #e8eaed;
   --text-secondary: #9aa4b2;
-  --text-muted: #6b7484;
+  --text-muted: #7b8494;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.5);
+  --overlay: rgba(4, 6, 10, 0.66);
 
   --radius-sm: 6px;
   --radius-md: 10px;
   --radius-lg: 16px;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  /* Accents are darkened for light surfaces so text and icons keep >= 4.5:1
+     contrast on white. */
+  --cb-red: #d21f24;
+  --cb-red-dim: #fbe3e4;
+  --cb-red-bright: #b3161b;
+  --cb-teal: #00808b;
+  --cb-amber: #9a6400;
+  --cb-green: #13803d;
+  --cb-blue: #1d64d8;
+  --on-accent: #ffffff;
+
+  --bg-0: #f5f6f8;
+  --bg-1: #ffffff;
+  --bg-2: #f0f2f5;
+  --bg-3: #e4e7ec;
+
+  --border-subtle: #e1e4ea;
+  --border-strong: #c5cad4;
+
+  --text-primary: #141922;
+  --text-secondary: #4a5261;
+  --text-muted: #646c7a;
+
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06);
+  --shadow-lg: 0 12px 32px rgba(16, 24, 40, 0.16);
+  --overlay: rgba(16, 24, 40, 0.4);
 }
 
 * {
@@ -37,6 +81,7 @@ body,
 
 body {
   background: var(--bg-0);
+  transition: background-color 0.15s ease, color 0.15s ease;
   color: var(--text-primary);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   font-size: 14px;
@@ -80,6 +125,24 @@ textarea:focus {
   border-radius: 8px;
 }
 
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.92em;
+  background: var(--bg-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
 .cb-btn {
   border: 1px solid var(--border-strong);
   background: var(--bg-2);
@@ -102,7 +165,23 @@ textarea:focus {
 .cb-btn-primary {
   background: var(--cb-red);
   border-color: var(--cb-red);
-  color: white;
+  color: var(--on-accent);
+}
+
+.cb-btn-danger {
+  color: var(--cb-red-bright);
+  border-color: color-mix(in srgb, var(--cb-red-bright) 45%, var(--border-strong));
+}
+
+.cb-btn-danger:hover {
+  border-color: var(--cb-red-bright);
+}
+
+.cb-btn:focus-visible,
+.cb-seg button:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--cb-teal);
+  outline-offset: 2px;
 }
 
 .cb-btn-primary:hover {
@@ -115,6 +194,137 @@ textarea:focus {
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   padding: 20px;
+  box-shadow: var(--shadow-sm);
+}
+
+.cb-section-title {
+  font-size: 13px;
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+
+.cb-muted {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.cb-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  background: var(--bg-2);
+}
+
+/* Segmented control (theme picker, small toggles) */
+.cb-seg {
+  display: inline-flex;
+  padding: 2px;
+  gap: 2px;
+  background: var(--bg-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+}
+
+.cb-seg button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 5px 8px;
+  border-radius: 6px;
+}
+
+.cb-seg button[aria-pressed="true"] {
+  background: var(--bg-1);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-sm);
+}
+
+/* Modal dialog */
+.cb-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  z-index: 50;
+}
+
+.cb-dialog {
+  width: min(620px, 100%);
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  background: var(--bg-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  padding: 22px;
+}
+
+.cb-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.cb-table th {
+  text-align: left;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.cb-table td {
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+/* Sync stage stepper */
+.cb-stages {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.cb-stage {
+  flex: 1 1 110px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-2);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.cb-stage[data-state="done"] {
+  color: var(--cb-green);
+  border-color: color-mix(in srgb, var(--cb-green) 40%, var(--border-subtle));
+}
+
+.cb-stage[data-state="active"] {
+  color: var(--text-primary);
+  border-color: var(--cb-teal);
+  background: color-mix(in srgb, var(--cb-teal) 12%, var(--bg-2));
+}
+
+.cb-stage[data-state="warn"] {
+  color: var(--cb-amber);
+  border-color: var(--cb-amber);
 }
 
 .cb-spin {
@@ -174,11 +384,19 @@ textarea:focus {
 }
 
 .topo-card-header--source {
-  background: linear-gradient(180deg, rgba(0, 167, 181, 0.22), rgba(0, 167, 181, 0.04));
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--cb-teal) 22%, transparent),
+    color-mix(in srgb, var(--cb-teal) 4%, transparent)
+  );
 }
 
 .topo-card-header--dest {
-  background: linear-gradient(180deg, rgba(234, 35, 40, 0.26), rgba(234, 35, 40, 0.05));
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--cb-red) 22%, transparent),
+    color-mix(in srgb, var(--cb-red) 4%, transparent)
+  );
 }
 
 .topo-card-body {

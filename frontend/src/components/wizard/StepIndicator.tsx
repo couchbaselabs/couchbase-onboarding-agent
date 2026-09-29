@@ -16,7 +16,7 @@ export default function StepIndicator({ step }: { step: number }) {
                   display: "flex", alignItems: "center", justifyContent: "center",
                   fontSize: 12, fontWeight: 700,
                   background: state === "pending" ? "var(--bg-2)" : "var(--cb-red)",
-                  color: state === "pending" ? "var(--text-muted)" : "white",
+                  color: state === "pending" ? "var(--text-muted)" : "var(--on-accent)",
                   border: state === "active" ? "2px solid var(--cb-red-bright)" : "none",
                 }}
               >

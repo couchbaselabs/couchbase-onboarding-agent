@@ -3,7 +3,8 @@ import { Link } from "react-router-dom";
 import { api } from "@/api/client";
 import type { MigrationRecord } from "@/api/types";
 import { useMigrationSocket } from "@/hooks/useMigrationSocket";
-import { statusColor, SOURCE_TYPE_LABELS } from "@/theme/tokens";
+import { formatUtc } from "@/utils/time";
+import { phaseLabel, statusColor, SOURCE_TYPE_LABELS, tint } from "@/theme/tokens";
 
 export default function DashboardPage() {
   const [migrations, setMigrations] = useState<MigrationRecord[]>([]);
@@ -25,7 +26,7 @@ export default function DashboardPage() {
         <div>
           <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>Migrations</h1>
           <p style={{ color: "var(--text-secondary)", fontSize: 13, marginTop: 4 }}>
-            MongoDB, DynamoDB, Redis, Cassandra, and Cosmos DB onboarding into Couchbase.
+            MongoDB, DynamoDB, Redis, Cassandra, Cosmos DB, and Couchbase onboarding into Couchbase Server or Capella.
           </p>
         </div>
         <Link to="/new" className="cb-btn cb-btn-primary">
@@ -52,7 +53,7 @@ export default function DashboardPage() {
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
             <thead>
               <tr style={{ textAlign: "left", borderBottom: "1px solid var(--border-subtle)" }}>
-                {["Name", "Source", "Destination bucket", "Phase", "Docs migrated", "Updated"].map((h) => (
+                {["Name", "Source", "Destination bucket", "Phase", "Docs + changes", "Updated"].map((h) => (
                   <th key={h} style={{ padding: "10px 16px", fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase" }}>
                     {h}
                   </th>
@@ -74,13 +75,15 @@ export default function DashboardPage() {
                     </td>
                     <td style={{ padding: "12px 16px", color: "var(--text-secondary)" }}>{m.plan.destination_bucket}</td>
                     <td style={{ padding: "12px 16px" }}>
-                      <span className="cb-badge" style={{ background: `${statusColor(m.phase)}22`, color: statusColor(m.phase) }}>
-                        {m.phase.replace(/_/g, " ")}
+                      <span className="cb-badge" style={{ background: tint(statusColor(m.phase)), color: statusColor(m.phase) }}>
+                        {phaseLabel(m.phase)}
                       </span>
                     </td>
-                    <td style={{ padding: "12px 16px" }}>{m.stats.docs_migrated.toLocaleString()}</td>
+                    <td style={{ padding: "12px 16px" }}>
+                      {(m.stats.docs_migrated + m.stats.mutations_replicated).toLocaleString()}
+                    </td>
                     <td style={{ padding: "12px 16px", color: "var(--text-muted)" }}>
-                      {new Date(m.updated_at).toLocaleString()}
+                      {formatUtc(m.updated_at)}
                     </td>
                   </tr>
                 ))}

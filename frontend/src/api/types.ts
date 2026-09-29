@@ -25,7 +25,35 @@ export type MigrationPhase =
   | "rolling_back"
   | "rolled_back"
   | "stopped"
-  | "cancelled";
+  | "cancelled"
+  | "fallback_syncing"
+  | "fell_back";
+
+export type SyncStage =
+  | "idle"
+  | "capturing"
+  | "bulk_copy"
+  | "catch_up"
+  | "streaming"
+  | "recovering"
+  | "draining"
+  | "stopped";
+
+export type CdcMethod =
+  | "change_stream"
+  | "stream_shards"
+  | "change_feed"
+  | "writetime_poll"
+  | "keyspace_events"
+  | "xdcr"
+  | "cas_poll";
+
+export interface SourceTypeInfo {
+  value: SourceType;
+  label: string;
+  fields: string[];
+  cdc: { method: CdcMethod | null; resumable: boolean; captures_deletes: boolean; reverse_sync: boolean };
+}
 
 export interface SourceConnectionConfig {
   label: string;
@@ -36,6 +64,8 @@ export interface SourceConnectionConfig {
   password?: string;
   use_tls?: boolean;
   ca_cert_path?: string;
+  ca_cert_pem?: string;
+  tls_skip_verify?: boolean;
   couchbase_external_network?: boolean;
   redis_db_index?: number;
   cassandra_port?: number;
@@ -59,6 +89,8 @@ export interface CouchbaseConnectionConfig {
   capella_project_id?: string;
   use_tls?: boolean;
   ca_cert_path?: string;
+  ca_cert_pem?: string;
+  tls_skip_verify?: boolean;
 }
 
 export interface SourceContainerStats {
@@ -78,6 +110,10 @@ export interface SourceTopologySnapshot {
   total_estimated_size_bytes?: number | null;
   supports_cdc: boolean;
   cdc_notes?: string | null;
+  cdc_method?: CdcMethod | null;
+  cdc_resumable?: boolean;
+  cdc_captures_deletes?: boolean;
+  reverse_sync_supported?: boolean;
 }
 
 export interface CouchbaseTopologySnapshot {
@@ -127,6 +163,9 @@ export interface MigrationPlanCreate {
   containers: ContainerMigrationSpec[];
   concurrency: number;
   rate_limit_docs_per_sec?: number | null;
+  reconcile_interval_minutes?: number;
+  journal_overwrites?: boolean;
+  create_destination_indexes?: boolean;
   is_continuous?: boolean;
 }
 
@@ -174,6 +213,95 @@ export interface MigrationRecord {
   error_message?: string | null;
   bottleneck_findings: BottleneckFinding[];
   checkpoint: Record<string, unknown>;
+  sync: SyncState;
+  rollback_state: RollbackState;
+  fallback: FallbackState;
+  failed_events: FailedEvent[];
+  cutover_at?: string | null;
+  verification: ContainerVerification[];
+  verified_at?: string | null;
+}
+
+export interface ReconcileStatus {
+  running: boolean;
+  last_started_at?: string | null;
+  last_finished_at?: string | null;
+  last_result?: string | null;
+  deletes_applied_total: number;
+  missing_in_destination: number;
+}
+
+export interface SyncState {
+  stage: SyncStage;
+  capture_started_at?: string | null;
+  bulk_copy_started_at?: string | null;
+  bulk_copy_finished_at?: string | null;
+  caught_up_at?: string | null;
+  drain_requested_at?: string | null;
+  last_event_at?: string | null;
+  last_checkpoint_at?: string | null;
+  stream_restarts: number;
+  last_stream_error?: string | null;
+  cdc_method?: CdcMethod | null;
+  reconcile: ReconcileStatus;
+}
+
+export interface RollbackState {
+  captured: boolean;
+  bucket_created_by_migration: boolean;
+  preexisting_collections: string[];
+  owned_collections: string[];
+  journal_keyspace?: string | null;
+  journaled_docs: number;
+  completed_steps: string[];
+  last_summary?: string | null;
+}
+
+export interface FallbackState {
+  active: boolean;
+  started_at?: string | null;
+  stopped_at?: string | null;
+  changes_applied: number;
+  deletes_applied: number;
+  errors: number;
+  last_poll_at?: string | null;
+  last_error?: string | null;
+  lag_seconds?: number | null;
+}
+
+export interface FailedEvent {
+  container: string;
+  key?: string | null;
+  op: string;
+  error: string;
+  at: string;
+}
+
+export interface ContainerVerification {
+  container: string;
+  target: string;
+  source_count?: number | null;
+  dest_count?: number | null;
+  matched?: boolean | null;
+  note?: string | null;
+}
+
+export interface RollbackOptions {
+  reason?: string;
+  purge_destination_data?: boolean;
+  drop_owned_collections?: boolean;
+  restore_overwritten?: boolean;
+  drop_created_bucket?: boolean;
+  confirm_after_cutover?: boolean;
+}
+
+export interface RollbackPlan {
+  migration_id: string;
+  phase: MigrationPhase;
+  allowed: boolean;
+  requires_cutover_confirmation: boolean;
+  steps: string[];
+  warnings: string[];
 }
 
 export interface ReplicationModeRecommendationResponse {

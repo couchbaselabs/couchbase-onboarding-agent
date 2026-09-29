@@ -1,4 +1,5 @@
 import type { CouchbaseConnectionConfig } from "@/api/types";
+import TlsFields from "./TlsFields";
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -68,9 +69,12 @@ export default function CouchbaseConfigForm({
           Use TLS
         </label>
       )}
+      {(value.is_capella || value.use_tls) && (
+        <TlsFields caPem={value.ca_cert_pem} skipVerify={value.tls_skip_verify} onChange={onChange} />
+      )}
       <div style={{ fontSize: 11.5, color: "var(--text-muted)" }}>
         Allow-list this agent's IP address on the destination cluster before testing the connection.
-        Set <code>CAPELLA_API_TOKEN</code>/<code>CAPELLA_ORG_ID</code> in <code>.env</code> plus the project/cluster
+        Set <code>CAPELLA_API_TOKEN</code>/<code>CAPELLA_ORG_ID</code> on the backend plus the project/cluster
         ID above if you want the destination bucket auto-provisioned.
       </div>
     </div>

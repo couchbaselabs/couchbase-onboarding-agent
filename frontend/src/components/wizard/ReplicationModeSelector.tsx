@@ -9,12 +9,14 @@ const OPTIONS: { value: MigrationStrategy; label: string; description: string }[
   {
     value: "cdc_live",
     label: "Continuous replication",
-    description: "Change-data-capture starts immediately and stays running until you stop it.",
+    description:
+      "No separate bulk copy: change capture starts from the beginning of the change log (or now, where the log has no history) and runs until cutover.",
   },
   {
     value: "full_load_and_cdc",
     label: "Bulk copy + continuous sync",
-    description: "A full load for existing data, then change-data-capture takes over for the ongoing delta.",
+    description:
+      "Records the source's change position, copies existing data, then replays every change made since -- no gap -- and keeps syncing until cutover.",
   },
 ];
 

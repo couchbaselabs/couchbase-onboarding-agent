@@ -1,34 +1,31 @@
-# Vite bakes VITE_API_BASE_URL/VITE_WS_BASE_URL into the static JS bundle at BUILD
-# time -- they have to be passed as build args (see docker-compose.yml), and a
-# plain `docker compose up` without `--build` will not pick up a change to them.
-ARG VITE_API_BASE_URL=http://localhost:8000
-ARG VITE_WS_BASE_URL=ws://localhost:8000
-
+# Build the UI, then serve it with an unprivileged nginx that also proxies
+# /api and /ws to the backend (see nginx.conf.template).
 FROM node:20-slim AS build
 WORKDIR /app
 
+# Optional corporate/proxy root CA (see scripts/setup-corporate-ca.sh). No-op when certs/ is empty.
 COPY certs/ /usr/local/share/ca-certificates/extra/
 RUN if find /usr/local/share/ca-certificates/extra -name '*.crt' 2>/dev/null | grep -q .; then \
       apt-get update && \
       apt-get install -y --no-install-recommends ca-certificates && \
       update-ca-certificates && \
       rm -rf /var/lib/apt/lists/*; \
-      export NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt; \
     fi
+ENV NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
 
-COPY package.json package-lock.json* ./
-RUN npm install
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
 
 COPY . .
-ARG VITE_API_BASE_URL
-ARG VITE_WS_BASE_URL
+# Leave empty to call the API same-origin through nginx (the default). Only set
+# it when the UI is hosted separately from the backend.
+ARG VITE_API_BASE_URL=""
 ENV VITE_API_BASE_URL=${VITE_API_BASE_URL}
-ENV VITE_WS_BASE_URL=${VITE_WS_BASE_URL}
 RUN npm run build
 
-FROM node:20-slim AS serve
-WORKDIR /app
-RUN npm install -g serve@14
-COPY --from=build /app/dist ./dist
-EXPOSE 5173
-CMD ["serve", "-s", "dist", "-l", "5173"]
+FROM nginxinc/nginx-unprivileged:1.27-alpine AS serve
+ENV BACKEND_URL=http://backend:8000
+COPY nginx.conf.template /etc/nginx/templates/default.conf.template
+COPY --from=build /app/dist /usr/share/nginx/html
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=3s CMD wget -qO- http://127.0.0.1:8080/healthz || exit 1

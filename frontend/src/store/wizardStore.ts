@@ -20,6 +20,8 @@ interface WizardState {
   strategy: MigrationStrategy;
   containers: ContainerMigrationSpec[];
   concurrency: number;
+  reconcileIntervalMinutes: number;
+  journalOverwrites: boolean;
 
   setStep: (step: number) => void;
   setName: (name: string) => void;
@@ -32,6 +34,8 @@ interface WizardState {
   setContainers: (c: ContainerMigrationSpec[]) => void;
   toggleContainer: (name: string) => void;
   setConcurrency: (n: number) => void;
+  setReconcileIntervalMinutes: (n: number) => void;
+  setJournalOverwrites: (v: boolean) => void;
   reset: () => void;
 }
 
@@ -64,6 +68,8 @@ export const useWizardStore = create<WizardState>((set, get) => ({
   strategy: "full_load",
   containers: [],
   concurrency: 8,
+  reconcileIntervalMinutes: 60,
+  journalOverwrites: true,
 
   setStep: (step) => set({ step }),
   setName: (name) => set({ name }),
@@ -88,10 +94,13 @@ export const useWizardStore = create<WizardState>((set, get) => ({
       containers: get().containers.map((c) => (c.container_name === name ? { ...c, include: !c.include } : c)),
     }),
   setConcurrency: (concurrency) => set({ concurrency }),
+  setReconcileIntervalMinutes: (reconcileIntervalMinutes) => set({ reconcileIntervalMinutes }),
+  setJournalOverwrites: (journalOverwrites) => set({ journalOverwrites }),
   reset: () =>
     set({
       step: 0, name: "", source: { ...defaultSource }, sourceTopology: null,
       destination: { ...defaultDestination }, destTopology: null, destinationBucket: "",
       destinationBucketRamQuotaMb: 1024, strategy: "full_load", containers: [], concurrency: 8,
+      reconcileIntervalMinutes: 60, journalOverwrites: true,
     }),
 }));

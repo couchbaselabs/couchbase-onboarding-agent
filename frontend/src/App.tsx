@@ -6,6 +6,7 @@ import NewMigrationPage from "@/pages/NewMigrationPage";
 import MigrationDetailPage from "@/pages/MigrationDetailPage";
 import AgentPanel from "@/components/agent/AgentPanel";
 import AgentStatusIndicator from "@/components/agent/AgentStatusIndicator";
+import ThemeToggle from "@/components/common/ThemeToggle";
 import { useWizardStore } from "@/store/wizardStore";
 import type { SourceType } from "@/api/types";
 import { SOURCE_TYPE_SUPPORT } from "@/theme/tokens";
@@ -55,6 +56,9 @@ export default function App() {
 
           <div style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: 12 }}>
             <AgentStatusIndicator />
+          </div>
+          <div style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: 12 }}>
+            <ThemeToggle />
           </div>
         </div>
       </aside>

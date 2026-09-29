@@ -8,12 +8,40 @@ import type {
   MigrationRecord,
   MigrationStrategy,
   ReplicationModeRecommendationResponse,
+  RollbackOptions,
+  RollbackPlan,
   SourceConnectionConfig,
+  SourceTypeInfo,
   SourceTopologySnapshot,
   ValidationReport,
 } from "./types";
 
-const BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+/** Same-origin by default: the bundled nginx (and `npm run dev`'s proxy) forward
+ * /api and /ws to the backend. Set VITE_API_BASE_URL only when the UI is served
+ * from somewhere else. */
+const BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "";
+
+const TOKEN_KEY = "cb-onboarding-api-token";
+
+export function getToken(): string | null {
+  try {
+    return sessionStorage.getItem(TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function setToken(token: string | null) {
+  try {
+    if (token) sessionStorage.setItem(TOKEN_KEY, token);
+    else sessionStorage.removeItem(TOKEN_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+/** Fired when the backend rejects the current token; AuthGate listens for it. */
+export const AUTH_REQUIRED_EVENT = "cb-auth-required";
 
 class ApiError extends Error {
   constructor(public status: number, message: string) {
@@ -22,15 +50,23 @@ class ApiError extends Error {
 }
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const token = getToken();
   const resp = await fetch(`${BASE}${path}`, {
     ...options,
-    headers: { "Content-Type": "application/json", ...(options?.headers || {}) },
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(options?.headers || {}),
+    },
   });
+  if (resp.status === 401) {
+    window.dispatchEvent(new Event(AUTH_REQUIRED_EVENT));
+  }
   if (!resp.ok) {
     let detail = resp.statusText;
     try {
       const body = await resp.json();
-      detail = body.detail || JSON.stringify(body);
+      detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail ?? body);
     } catch {
       // ignore
     }
@@ -40,60 +76,71 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return (await resp.json()) as T;
 }
 
+/** WebSocket URL for a path, carrying the API token as a query parameter
+ * (browsers can't set headers on a WebSocket). */
+export function wsUrl(path: string): string {
+  const explicit = import.meta.env.VITE_WS_BASE_URL as string | undefined;
+  let base: string;
+  if (explicit) base = explicit;
+  else if (BASE) base = BASE.replace(/^http/, "ws");
+  else base = `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}`;
+  const token = getToken();
+  return `${base}${path}${token ? `?token=${encodeURIComponent(token)}` : ""}`;
+}
+
+const post = <T,>(path: string, body?: unknown) =>
+  request<T>(path, { method: "POST", body: body === undefined ? undefined : JSON.stringify(body) });
+
 export const api = {
-  sourceTypes: () => request<{ value: string; label: string; fields: string[] }[]>("/api/source-types"),
+  publicConfig: () => request<{ auth_required: boolean; version: string }>("/api/config"),
+
+  sourceTypes: () => request<SourceTypeInfo[]>("/api/source-types"),
 
   testSourceConnection: (config: SourceConnectionConfig) =>
-    request<SourceTopologySnapshot>("/api/sources/test-connection", {
-      method: "POST",
-      body: JSON.stringify(config),
-    }),
+    post<SourceTopologySnapshot>("/api/sources/test-connection", config),
 
   testDestinationConnection: (config: CouchbaseConnectionConfig) =>
-    request<CouchbaseTopologySnapshot>("/api/sources/test-destination", {
-      method: "POST",
-      body: JSON.stringify(config),
+    post<CouchbaseTopologySnapshot>("/api/sources/test-destination", config),
+
+  recommendMode: (cutoverPlan: "cutover" | "phased", sourceTopology: SourceTopologySnapshot, concurrency: number) =>
+    post<ReplicationModeRecommendationResponse>("/api/agent/recommend-replication-mode", {
+      cutover_plan: cutoverPlan, source_topology: sourceTopology, concurrency,
     }),
 
-  recommendMode: (
-    cutoverPlan: "cutover" | "phased",
-    sourceTopology: SourceTopologySnapshot,
-    concurrency: number,
-  ) =>
-    request<ReplicationModeRecommendationResponse>("/api/agent/recommend-replication-mode", {
-      method: "POST",
-      body: JSON.stringify({ cutover_plan: cutoverPlan, source_topology: sourceTopology, concurrency }),
-    }),
-
-  createMigration: (plan: MigrationPlanCreate) =>
-    request<MigrationRecord>("/api/migrations", { method: "POST", body: JSON.stringify(plan) }),
+  createMigration: (plan: MigrationPlanCreate) => post<MigrationRecord>("/api/migrations", plan),
 
   listMigrations: () => request<MigrationRecord[]>("/api/migrations"),
 
   getMigration: (id: string) => request<MigrationRecord>(`/api/migrations/${id}`),
 
-  validateMigration: (id: string) =>
-    request<ValidationReport>(`/api/migrations/${id}/validate`, { method: "POST" }),
+  validateMigration: (id: string) => post<ValidationReport>(`/api/migrations/${id}/validate`),
 
   approveMigration: (id: string, approvedBy: string) =>
-    request<MigrationRecord>(`/api/migrations/${id}/approve`, {
-      method: "POST",
-      body: JSON.stringify({ migration_id: id, approved_by: approvedBy }),
-    }),
+    post<MigrationRecord>(`/api/migrations/${id}/approve`, { migration_id: id, approved_by: approvedBy }),
 
-  startMigration: (id: string) =>
-    request<MigrationRecord>(`/api/migrations/${id}/start`, { method: "POST" }),
+  startMigration: (id: string) => post<MigrationRecord>(`/api/migrations/${id}/start`),
 
   stopReplication: (id: string, performCutover: boolean) =>
-    request<MigrationRecord>(`/api/migrations/${id}/replication/stop`, {
-      method: "POST",
-      body: JSON.stringify({ migration_id: id, perform_cutover: performCutover }),
+    post<MigrationRecord>(`/api/migrations/${id}/replication/stop`, {
+      migration_id: id, perform_cutover: performCutover,
     }),
 
-  rollbackMigration: (id: string, reason: string, purgeDestinationData = true) =>
-    request<MigrationRecord>(`/api/migrations/${id}/rollback`, {
-      method: "POST",
-      body: JSON.stringify({ migration_id: id, reason, purge_destination_data: purgeDestinationData }),
+  resumeMigration: (id: string) => post<MigrationRecord>(`/api/migrations/${id}/resume`),
+
+  reconcile: (id: string, force = false) =>
+    post<MigrationRecord>(`/api/migrations/${id}/reconcile`, { migration_id: id, force }),
+
+  rollbackPlan: (id: string, options: RollbackOptions) =>
+    post<RollbackPlan>(`/api/migrations/${id}/rollback/plan`, { migration_id: id, ...options }),
+
+  rollbackMigration: (id: string, options: RollbackOptions) =>
+    post<MigrationRecord>(`/api/migrations/${id}/rollback`, { migration_id: id, ...options }),
+
+  startFallback: (id: string) => post<MigrationRecord>(`/api/migrations/${id}/fallback/start`),
+
+  stopFallback: (id: string, fallBackToSource: boolean) =>
+    post<MigrationRecord>(`/api/migrations/${id}/fallback/stop`, {
+      migration_id: id, fall_back_to_source: fallBackToSource,
     }),
 
   deleteMigration: (id: string) => request<{ deleted: boolean }>(`/api/migrations/${id}`, { method: "DELETE" }),
@@ -101,10 +148,7 @@ export const api = {
   getLogs: (id: string) => request<{ log_tail: string[] }>(`/api/stats/${id}/logs`),
 
   chat: (message: string, migrationId?: string) =>
-    request<AgentChatResponse>("/api/agent/chat", {
-      method: "POST",
-      body: JSON.stringify({ message, migration_id: migrationId, use_memory: true }),
-    }),
+    post<AgentChatResponse>("/api/agent/chat", { message, migration_id: migrationId, use_memory: true }),
 
   agentStatus: () => request<AgentStatusResponse>("/api/agent/status"),
 };

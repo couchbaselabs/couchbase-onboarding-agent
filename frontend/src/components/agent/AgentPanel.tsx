@@ -78,7 +78,7 @@ export default function AgentPanel() {
         style={{
           position: "fixed", bottom: 24, right: 24, borderRadius: 999,
           height: 52, padding: "0 22px", display: "flex", alignItems: "center", justifyContent: "center",
-          gap: 9, fontSize: 14, boxShadow: "0 8px 24px rgba(0,0,0,0.35)",
+          gap: 9, fontSize: 14, boxShadow: "var(--shadow-lg)",
         }}
         aria-label="Ask the agent"
       >
@@ -94,7 +94,7 @@ export default function AgentPanel() {
         position: "fixed", bottom: 24, right: 24, width: 360, height: 480,
         background: "var(--bg-1)", border: "1px solid var(--border-subtle)",
         borderRadius: "var(--radius-md)", display: "flex", flexDirection: "column", overflow: "hidden",
-        boxShadow: "0 12px 40px rgba(0,0,0,0.5)",
+        boxShadow: "var(--shadow-lg)",
       }}
     >
       <div
@@ -113,7 +113,7 @@ export default function AgentPanel() {
           <div style={{ fontSize: 12.5, color: "var(--text-primary)", display: "flex", flexDirection: "column", gap: 12 }}>
             <div>
               Welcome to the Couchbase Onboarding Agent. I help plan and de-risk your migration from MongoDB,
-              DynamoDB, Redis, Cassandra, or Cosmos DB into Couchbase.
+              DynamoDB, Redis, Cassandra, Cosmos DB, or another Couchbase cluster into Couchbase.
             </div>
             <div>
               <div style={{ fontWeight: 700, marginBottom: 4 }}>Automatically, I:</div>
@@ -128,6 +128,7 @@ export default function AgentPanel() {
               <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                 <div>- Recommend a strategy (one-time load, continuous CDC, or hybrid) for your use case</div>
                 <div>- Explain a validation failure or warning and how to fix it</div>
+                <div>- Walk through cutover, rollback, or falling back to the source</div>
                 <div>- Reason through how your source data will map into Couchbase documents</div>
               </div>
             </div>
@@ -157,7 +158,7 @@ export default function AgentPanel() {
                 alignSelf: t.role === "user" ? "flex-end" : "flex-start",
                 maxWidth: "85%",
                 background: t.role === "user" ? "var(--cb-red)" : "var(--bg-2)",
-                color: t.role === "user" ? "white" : "var(--text-primary)",
+                color: t.role === "user" ? "var(--on-accent)" : "var(--text-primary)",
                 borderRadius: 10, padding: "8px 11px", fontSize: 12.5, whiteSpace: "pre-wrap",
               }}
             >

@@ -1,25 +1,27 @@
 import { useEffect, useRef, useState } from "react";
+import { AUTH_REQUIRED_EVENT, wsUrl } from "@/api/client";
 import type { MigrationRecord } from "@/api/types";
 
-const WS_BASE = import.meta.env.VITE_WS_BASE_URL || "ws://localhost:8000";
-
-/** Subscribes to live progress for one migration (or "*" for every migration, used
- * by the dashboard). Falls back to nothing but a stale snapshot if the socket
- * drops -- callers should still poll once on mount via the REST API for the
- * initial state. */
+/** Subscribes to live progress for one migration (or "*" for every migration,
+ * used by the dashboard). Reconnects with backoff; callers still fetch the
+ * initial state over REST. */
 export function useMigrationSocket(migrationId: string | "*") {
   const [record, setRecord] = useState<MigrationRecord | null>(null);
   const [records, setRecords] = useState<Record<string, MigrationRecord>>({});
   const wsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
-    const finalUrl = migrationId === "*" ? `${WS_BASE}/ws/migrations` : `${WS_BASE}/ws/migrations/${migrationId}`;
+    const path = migrationId === "*" ? "/ws/migrations" : `/ws/migrations/${migrationId}`;
     let closedByUs = false;
-    let socket: WebSocket;
+    let delay = 1000;
+    let timer: ReturnType<typeof setTimeout> | undefined;
 
     function connect() {
-      socket = new WebSocket(finalUrl);
+      const socket = new WebSocket(wsUrl(path));
       wsRef.current = socket;
+      socket.onopen = () => {
+        delay = 1000;
+      };
       socket.onmessage = (event) => {
         try {
           const parsed = JSON.parse(event.data) as MigrationRecord;
@@ -29,8 +31,12 @@ export function useMigrationSocket(migrationId: string | "*") {
           // ignore malformed frame
         }
       };
-      socket.onclose = () => {
-        if (!closedByUs) setTimeout(connect, 2000);
+      socket.onclose = (event) => {
+        if (event.code === 4401) window.dispatchEvent(new Event(AUTH_REQUIRED_EVENT));
+        if (!closedByUs) {
+          timer = setTimeout(connect, delay);
+          delay = Math.min(delay * 2, 15000);
+        }
       };
       socket.onerror = () => socket.close();
     }
@@ -38,9 +44,9 @@ export function useMigrationSocket(migrationId: string | "*") {
 
     return () => {
       closedByUs = true;
+      if (timer) clearTimeout(timer);
       wsRef.current?.close();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [migrationId]);
 
   return { record, records };

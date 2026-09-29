@@ -1,45 +1,62 @@
-/** JS-side mirror of theme.css custom properties, for use where CSS variables
- * aren't convenient (e.g. computed stroke colors inside an inline SVG diagram). */
+/** Color references for places CSS classes can't reach (inline SVG, Recharts,
+ * lucide icon props). Every value is a CSS custom property from theme.css, so
+ * the same code renders correctly in light and dark mode. */
 export const colors = {
-  cbRed: "#EA2328",
-  cbRedDim: "#7A1215",
-  cbRedBright: "#FF4B4F",
-  cbTeal: "#00A7B5",
-  cbAmber: "#F2A900",
-  cbGreen: "#2ECC71",
-  cbBlue: "#4C9AFF",
-  bg0: "#0B0E14",
-  bg1: "#12161F",
-  bg2: "#191E2A",
-  bg3: "#232936",
-  borderSubtle: "#2A3140",
-  borderStrong: "#3A4256",
-  textPrimary: "#E8EAED",
-  textSecondary: "#9AA4B2",
-  textMuted: "#6B7484",
+  cbRed: "var(--cb-red)",
+  cbRedDim: "var(--cb-red-dim)",
+  cbRedBright: "var(--cb-red-bright)",
+  cbTeal: "var(--cb-teal)",
+  cbAmber: "var(--cb-amber)",
+  cbGreen: "var(--cb-green)",
+  cbBlue: "var(--cb-blue)",
+  bg0: "var(--bg-0)",
+  bg1: "var(--bg-1)",
+  bg2: "var(--bg-2)",
+  bg3: "var(--bg-3)",
+  borderSubtle: "var(--border-subtle)",
+  borderStrong: "var(--border-strong)",
+  textPrimary: "var(--text-primary)",
+  textSecondary: "var(--text-secondary)",
+  textMuted: "var(--text-muted)",
 } as const;
+
+/** A translucent wash of `color` (any CSS color, including var()) for badge
+ * and banner backgrounds. */
+export const tint = (color: string, percent = 14): string =>
+  `color-mix(in srgb, ${color} ${percent}%, transparent)`;
 
 export const statusColor = (status: string): string => {
   switch (status) {
     case "complete":
     case "validated":
     case "healthy":
+    case "rolled_back":
       return colors.cbGreen;
     case "awaiting_approval":
     case "validation_failed":
+    case "rolling_back":
+    case "fell_back":
+    case "stopped":
       return colors.cbAmber;
     case "failed":
-    case "rolled_back":
       return colors.cbRedBright;
     case "migrating":
     case "replicating":
     case "validating":
     case "verifying":
+    case "fallback_syncing":
       return colors.cbTeal;
     default:
       return colors.cbBlue;
   }
 };
+
+export const PHASE_LABELS: Record<string, string> = {
+  fallback_syncing: "fallback syncing",
+  fell_back: "fell back to source",
+};
+
+export const phaseLabel = (phase: string): string => PHASE_LABELS[phase] ?? phase.replace(/_/g, " ");
 
 export const SOURCE_TYPE_LABELS: Record<string, string> = {
   mongodb: "MongoDB",
@@ -52,15 +69,19 @@ export const SOURCE_TYPE_LABELS: Record<string, string> = {
   couchbase_capella: "Couchbase Capella",
 };
 
+export const CDC_METHOD_LABELS: Record<string, string> = {
+  change_stream: "MongoDB change streams",
+  stream_shards: "DynamoDB Streams",
+  change_feed: "Cosmos DB change feed",
+  writetime_poll: "WRITETIME() polling",
+  keyspace_events: "Keyspace notifications + re-read",
+  xdcr: "XDCR",
+  cas_poll: "CAS polling (Query service)",
+};
+
 /** Platform(s) each source connector talks to, the version range this app has
  * been built/tested against, and a compact form of that range for tight
- * spaces (sidebar). Single canonical source for both the wizard's source-type
- * caption and the sidebar's "Migrations Supported" list, so the two can't
- * drift out of sync. For the fully managed cloud services (DynamoDB, Cosmos
- * DB, Capella) there's no self-hosted version to track; for self-managed
- * Couchbase, the range matches this app's own destination-side supported
- * range (see backend Settings.min/max_supported_cb_version), since source and
- * destination are the same product family there. */
+ * spaces (sidebar). Single source for the wizard's caption and the sidebar. */
 export interface SourceTypeSupport {
   platform: string;
   versions: string;

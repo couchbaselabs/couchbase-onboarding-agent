@@ -1,10 +1,9 @@
 import { Workflow } from "lucide-react";
-import { colors } from "@/theme/tokens";
-import { SOURCE_TYPE_LABELS } from "@/theme/tokens";
+import { colors, SOURCE_TYPE_LABELS, tint } from "@/theme/tokens";
 import type { MigrationPhase, SourceType } from "@/api/types";
 
-const ACTIVE_PHASES: MigrationPhase[] = ["migrating", "replicating", "verifying"];
-const SETTLED_PHASES: MigrationPhase[] = ["complete"];
+const ACTIVE_PHASES: MigrationPhase[] = ["migrating", "replicating", "verifying", "fallback_syncing"];
+const SETTLED_PHASES: MigrationPhase[] = ["complete", "rolled_back"];
 
 export interface TopologyDestNode {
   hostname: string;
@@ -41,7 +40,8 @@ export default function TopologyDiagram({
       : flowing || SETTLED_PHASES.includes(phase)
         ? colors.cbGreen
         : colors.borderStrong;
-  const lineColor = flowing ? colors.cbGreen : colors.borderStrong;
+  const lineColor = flowing ? (phase === "fallback_syncing" ? colors.cbAmber : colors.cbGreen) : colors.borderStrong;
+  const reverse = phase === "fallback_syncing";
 
   return (
     <div className="topo-row">
@@ -61,13 +61,13 @@ export default function TopologyDiagram({
         </div>
       </div>
 
-      <Connector active={flowing} color={lineColor} />
+      <Connector active={flowing} color={lineColor} reverse={reverse} />
 
       <div className="topo-agent">
         <div className="topo-throughput" style={{ visibility: flowing && throughputPerSec != null ? "visible" : "hidden" }}>
           {throughputPerSec != null ? `${throughputPerSec.toFixed(1)}/s` : "0.0/s"}
         </div>
-        <div className="topo-circle" style={{ borderColor: ringColor, boxShadow: flowing ? `0 0 14px ${ringColor}55` : undefined }}>
+        <div className="topo-circle" style={{ borderColor: ringColor, boxShadow: flowing ? `0 0 14px ${tint(ringColor, 35)}` : undefined }}>
           <Workflow size={26} color={colors.cbRed} strokeWidth={2} />
         </div>
         <div className="topo-agent-label">
@@ -77,7 +77,7 @@ export default function TopologyDiagram({
         </div>
       </div>
 
-      <Connector active={flowing} color={lineColor} />
+      <Connector active={flowing} color={lineColor} reverse={reverse} />
 
       <div className="topo-card topo-dest">
         <div className="topo-card-header topo-card-header--dest">Destination{isCapella ? " (Capella)" : ""}</div>
@@ -111,9 +111,9 @@ export default function TopologyDiagram({
   );
 }
 
-function Connector({ active, color }: { active: boolean; color: string }) {
+function Connector({ active, color, reverse }: { active: boolean; color: string; reverse?: boolean }) {
   return (
-    <div className="topo-connector">
+    <div className="topo-connector" style={reverse ? { transform: "scaleX(-1)" } : undefined}>
       <div className="topo-line" style={{ background: color }} />
       {active && (
         <>

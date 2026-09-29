@@ -1,6 +1,7 @@
 import { Fragment } from "react";
 import type { SourceConnectionConfig, SourceType } from "@/api/types";
 import { SOURCE_TYPE_LABELS, SOURCE_TYPE_SUPPORT } from "@/theme/tokens";
+import TlsFields from "./TlsFields";
 
 const SOURCE_TYPES: SourceType[] = [
   "mongodb", "dynamodb", "redis", "cassandra", "cosmosdb",
@@ -158,6 +159,10 @@ export default function SourceConfigForm({
         <div style={{ fontSize: 11.5, color: "var(--text-muted)" }}>TLS is required and always enabled for Capella.</div>
       )}
 
+      {(isCapella || (!!value.use_tls && (t === "mongodb" || t === "redis" || t === "cassandra" || CB_SELF_MANAGED.includes(t)))) && (
+        <TlsFields caPem={value.ca_cert_pem} skipVerify={value.tls_skip_verify} onChange={onChange} />
+      )}
+
       {CB_SELF_MANAGED.includes(t) && (
         <label style={{ display: "flex", alignItems: "flex-start", gap: 8, fontSize: 12.5 }}>
           <input
@@ -232,11 +237,10 @@ export default function SourceConfigForm({
 
       {CB_FAMILY.includes(t) && (
         <div style={{ fontSize: 11.5, color: "var(--text-muted)" }}>
-          A Couchbase-to-Couchbase migration uses Couchbase's own native tools -- cbbackupmgr for
-          one-time migration, XDCR for continuous replication -- instead of this app's generic
-          per-document pipeline. Continuous/hybrid replication is only available from a
-          self-managed Enterprise Edition source (XDCR isn't available on Community Edition, and
-          isn't wired up here yet for a Capella source).
+          Couchbase-to-Couchbase bulk copy uses cbbackupmgr. Continuous sync uses XDCR from a
+          self-managed Enterprise Edition source; from Community Edition or Capella it polls the
+          Query service for changed documents (create a <code>META().cas</code> index on large
+          collections first). Keys, scopes and collections are kept as-is.
         </div>
       )}
 

@@ -8,13 +8,15 @@ import SourceConfigForm from "@/components/wizard/SourceConfigForm";
 import CouchbaseConfigForm from "@/components/wizard/CouchbaseConfigForm";
 import ReplicationModeSelector from "@/components/wizard/ReplicationModeSelector";
 import ValidationResults from "@/components/validation/ValidationResults";
+import CdcCapabilities from "@/components/wizard/CdcCapabilities";
 import type { MigrationStrategy, ReplicationModeRecommendationResponse, ValidationReport } from "@/api/types";
+import { colors, tint } from "@/theme/tokens";
 
 function ErrorBanner({ message }: { message: string }) {
   return (
     <div
       style={{
-        background: "rgba(255,75,79,0.1)", border: "1px solid var(--cb-red-bright)",
+        background: tint(colors.cbRedBright, 10), border: "1px solid var(--cb-red-bright)",
         borderRadius: 8, padding: "10px 14px", fontSize: 12.5, color: "var(--cb-red-bright)",
         display: "flex", gap: 8, alignItems: "flex-start",
       }}
@@ -93,6 +95,8 @@ export default function NewMigrationPage() {
         strategy: wizard.strategy,
         containers: wizard.containers,
         concurrency: wizard.concurrency,
+        reconcile_interval_minutes: wizard.reconcileIntervalMinutes,
+        journal_overwrites: wizard.journalOverwrites,
       });
       setMigrationId(record.migration_id);
       const report = await api.validateMigration(record.migration_id);
@@ -151,12 +155,13 @@ export default function NewMigrationPage() {
           {wizard.sourceTopology && (
             <div
               className="cb-badge"
-              style={{ background: "rgba(46,204,113,0.12)", color: "var(--cb-green)", width: "fit-content" }}
+              style={{ background: tint(colors.cbGreen, 12), color: "var(--cb-green)", width: "fit-content" }}
             >
               <CheckCircle2 size={13} /> Connected &middot; {wizard.sourceTopology.containers.length} container(s) &middot;{" "}
               {wizard.sourceTopology.server_edition || wizard.sourceTopology.server_version || "unknown version"}
             </div>
           )}
+          {wizard.sourceTopology && <CdcCapabilities topology={wizard.sourceTopology} />}
 
           <div style={{ display: "flex", gap: 10 }}>
             <button className="cb-btn" onClick={testSource} disabled={testingSource}>
@@ -183,7 +188,7 @@ export default function NewMigrationPage() {
           {wizard.destTopology && (
             <div
               className="cb-badge"
-              style={{ background: "rgba(46,204,113,0.12)", color: "var(--cb-green)", width: "fit-content" }}
+              style={{ background: tint(colors.cbGreen, 12), color: "var(--cb-green)", width: "fit-content" }}
             >
               <CheckCircle2 size={13} /> Reachable &middot; Couchbase {wizard.destTopology.cluster_version || "unknown"}
             </div>
@@ -270,6 +275,47 @@ export default function NewMigrationPage() {
             </div>
           )}
 
+          <div className="cb-card" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div className="cb-section-title" style={{ marginBottom: 0 }}>Sync &amp; rollback safety</div>
+            <label style={{ display: "flex", alignItems: "flex-start", gap: 8, fontSize: 12.5 }}>
+              <input
+                type="checkbox"
+                style={{ marginTop: 2 }}
+                checked={wizard.journalOverwrites}
+                onChange={(e) => wizard.setJournalOverwrites(e.target.checked)}
+              />
+              <span>
+                Journal documents this migration overwrites
+                <div className="cb-muted" style={{ marginTop: 2 }}>
+                  In destination collections that already exist, the previous version of any document the migration
+                  overwrites or deletes is saved first, so rollback can restore it. Collections the migration creates
+                  don't need it -- rollback drops them.
+                </div>
+              </span>
+            </label>
+            {wizard.strategy !== "full_load" && (
+              <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12.5, flexWrap: "wrap" }}>
+                <span style={{ fontWeight: 600, color: "var(--text-secondary)" }}>Reconcile deletes every</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={10080}
+                  value={wizard.reconcileIntervalMinutes}
+                  onChange={(e) => wizard.setReconcileIntervalMinutes(Math.max(0, Number(e.target.value)))}
+                  style={{ width: 90 }}
+                  aria-label="Reconciliation interval in minutes"
+                />
+                <span>minutes (0 = manual only)</span>
+                <div className="cb-muted" style={{ flexBasis: "100%" }}>
+                  Compares source and destination keys and removes documents deleted at the source.
+                  {wizard.sourceTopology && !wizard.sourceTopology.cdc_captures_deletes
+                    ? " This source's change capture doesn't report deletes, so keep this on."
+                    : " A safety net for changes missed during outages."}
+                </div>
+              </div>
+            )}
+          </div>
+
           <div className="cb-card" style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)" }}>Concurrency</div>
             <input
@@ -330,7 +376,14 @@ export default function NewMigrationPage() {
             <SummaryRow label="Name" value={wizard.name} />
             <SummaryRow label="Source" value={`${wizard.source.label} (${wizard.source.source_type})`} />
             <SummaryRow label="Destination bucket" value={`${wizard.destination.label} / ${wizard.destinationBucket}`} />
-            <SummaryRow label="Replication mode" value={wizard.strategy.replace(/_/g, " ")} />
+            <SummaryRow label="Replication mode" value={MODE_LABELS[wizard.strategy]} />
+            {wizard.strategy !== "full_load" && (
+              <SummaryRow
+                label="Delete reconciliation"
+                value={wizard.reconcileIntervalMinutes ? `every ${wizard.reconcileIntervalMinutes} min` : "manual"}
+              />
+            )}
+            <SummaryRow label="Overwrite journal" value={wizard.journalOverwrites ? "on" : "off"} />
             <SummaryRow label="Containers" value={`${wizard.containers.filter((c) => c.include).length} included`} />
           </div>
           <div className="cb-card">
@@ -351,6 +404,12 @@ export default function NewMigrationPage() {
     </div>
   );
 }
+
+const MODE_LABELS: Record<MigrationStrategy, string> = {
+  full_load: "One-time migration",
+  cdc_live: "Continuous replication",
+  full_load_and_cdc: "Bulk copy + continuous sync",
+};
 
 function SummaryRow({ label, value }: { label: string; value: string }) {
   return (
