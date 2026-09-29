@@ -16,6 +16,18 @@ class Settings(BaseSettings):
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
 
+    # --- Security ---
+    # When set, every /api and /ws request must present this token (Authorization:
+    # Bearer <token>, or ?token= for websockets). Leave empty only for a local,
+    # single-user run bound to 127.0.0.1 -- the API can read production credentials
+    # and delete destination data.
+    api_auth_token: str = ""
+    # Fernet key (urlsafe base64, 32 bytes) used to encrypt credentials in the
+    # state file. If empty, one is generated next to the state file on first start
+    # (fine for a single container; set it explicitly -- e.g. from a Kubernetes
+    # Secret -- anywhere the state volume might be copied or backed up).
+    state_encryption_key: str = ""
+
     # --- Destination: Couchbase Server / Capella ---
     # Same supported range as the sibling couchbase-migration-agent project, since
     # the destination side here is always Couchbase Server/Capella too.
@@ -87,6 +99,45 @@ class Settings(BaseSettings):
     cbbackupmgr_path: str = "cbbackupmgr"
     couchbase_backup_archive_dir: str = "/data/cbbackupmgr-archives"
     xdcr_poll_interval_s: int = 5
+    # Community Edition / Capella sources have no XDCR here, so continuous sync
+    # polls N1QL for documents whose META().cas moved past a watermark. The
+    # overlap re-reads a few seconds of changes each poll to absorb clock skew
+    # between nodes (re-applying a document is idempotent).
+    couchbase_cdc_poll_interval_s: int = 5
+    couchbase_cdc_overlap_s: int = 10
+    couchbase_cdc_page_size: int = 1000
+
+    # --- Continuous sync (all sources) ---
+    cdc_batch_size: int = 200              # change events applied per micro-batch
+    cdc_batch_max_wait_ms: int = 500       # flush a partial batch after this long
+    cdc_write_retries: int = 3             # per event, before it's recorded as failed
+    cdc_max_consecutive_failures: int = 20  # stream restarts before the migration fails
+    cdc_retry_max_backoff_s: int = 300
+    dynamodb_shard_discovery_interval_s: int = 30
+    # Redis keyspace notifications aren't durable, so during a bulk copy the
+    # connector remembers which keys changed and re-reads them afterwards. Past
+    # this many distinct keys it falls back to a full re-scan instead.
+    redis_dirty_key_limit: int = 1_000_000
+
+    # Reconciliation refuses to delete more than this fraction of a collection's
+    # migrated documents in one run without an explicit force from the UI -- a
+    # guard against a source listing that silently came back short.
+    reconcile_max_delete_fraction: float = 0.2
+    # Resume continuous sync / fallback sync automatically when the backend
+    # restarts (from the last checkpoint), instead of marking them failed.
+    auto_resume_on_startup: bool = True
+
+    # Cutover waits this long for the change stream to report it's caught up
+    # before verifying anyway (the log says so if it had to).
+    cutover_drain_timeout_s: int = 120
+    # Count keys at the source during verification (keys only; a full key scan
+    # per container). Disable for very large sources where the destination
+    # count alone is enough.
+    verify_source_counts: bool = True
+
+    # --- Post-cutover fallback (Couchbase -> source reverse sync) ---
+    fallback_poll_interval_s: int = 5
+    fallback_delete_check_interval_s: int = 300
 
 
 @lru_cache

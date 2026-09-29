@@ -1,16 +1,18 @@
 """
 Websocket hub for pushing live migration progress/stats to the React dashboard.
 Clients subscribe by migration_id; the MigrationEngine calls `broadcast()` on every
-progress tick / phase change. Identical in shape to the sibling
-couchbase-migration-agent project's -- this layer doesn't care what's being migrated.
+progress tick / phase change. Frames carry the record with credentials masked, and
+the endpoints require the API token when one is configured (?token=...).
 """
 from __future__ import annotations
 
+import json
 import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from app.models.schemas import MigrationRecord
+from app.api.security import websocket_authorized
+from app.models.schemas import MigrationRecord, redact_record
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -33,7 +35,7 @@ class ConnectionManager:
 
     async def broadcast(self, record: MigrationRecord) -> None:
         migration_id = str(record.migration_id)
-        payload = record.model_dump_json()
+        payload = json.dumps(redact_record(record), default=str)
         for target_id in (migration_id, "*"):  # "*" subscribers get every migration
             for ws in list(self._connections.get(target_id, set())):
                 try:
@@ -51,6 +53,8 @@ async def broadcast_progress(record: MigrationRecord) -> None:
 
 @router.websocket("/ws/migrations/{migration_id}")
 async def migration_progress_ws(websocket: WebSocket, migration_id: str) -> None:
+    if not await websocket_authorized(websocket):
+        return
     await manager.connect(migration_id, websocket)
     try:
         while True:
@@ -64,6 +68,8 @@ async def migration_progress_ws(websocket: WebSocket, migration_id: str) -> None
 @router.websocket("/ws/migrations")
 async def all_migrations_ws(websocket: WebSocket) -> None:
     """Subscribe to progress updates for every in-flight migration (dashboard overview)."""
+    if not await websocket_authorized(websocket):
+        return
     await manager.connect("*", websocket)
     try:
         while True:

@@ -137,3 +137,121 @@ def approx_size_bytes(value: Any) -> int:
         return len(json.dumps(value, default=str).encode("utf-8"))
     except Exception:  # noqa: BLE001
         return 0
+
+
+# ---------------------------------------------------------------------------
+# Type hints for lossless write-back (post-cutover fallback)
+# ---------------------------------------------------------------------------
+#
+# Couchbase stores JSON, so extraction turns source-native types (ObjectId,
+# dates, sets, binary) into strings/lists. Writing a document back to the source
+# needs to undo that, so connectors record the original type of each such value
+# under a JSON-pointer path (RFC 6901) in SourceDocument.types, and the reverse
+# writer converts those paths back. Values that were native JSON need no hint.
+
+SpecialHook = Callable[[Any], "tuple[Any, str] | None"]
+
+
+def _ptr_escape(part: str) -> str:
+    return part.replace("~", "~0").replace("/", "~1")
+
+
+def _ptr_unescape(part: str) -> str:
+    return part.replace("~1", "/").replace("~0", "~")
+
+
+def json_safe_typed(value: Any, hook: SpecialHook, types: dict[str, str], path: str = "") -> Any:
+    """Like json_safe(), but lets `hook` convert source-specific values first
+    and records the returned type name at the value's JSON-pointer path."""
+    special = hook(value)
+    if special is not None:
+        converted, type_name = special
+        types[path or "/"] = type_name
+        return converted
+    if isinstance(value, dict):
+        return {str(k): json_safe_typed(v, hook, types, f"{path}/{_ptr_escape(str(k))}") for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [json_safe_typed(v, hook, types, f"{path}/{i}") for i, v in enumerate(value)]
+    if isinstance(value, (set, frozenset)):
+        return [json_safe_typed(v, hook, types, f"{path}/{i}") for i, v in enumerate(value)]
+    return json_safe(value)
+
+
+def apply_type_hints(body: dict[str, Any], types: dict[str, str] | None, convert: Callable[[Any, str], Any]) -> dict[str, Any]:
+    """Convert each hinted path in `body` back with convert(value, type_name).
+    Paths that no longer exist (the application changed the document shape after
+    cutover) are skipped rather than failing the write."""
+    if not types:
+        return body
+    for path, type_name in types.items():
+        if path == "/":
+            continue
+        parts = [_ptr_unescape(p) for p in path.split("/")[1:]]
+        parent: Any = body
+        ok = True
+        for part in parts[:-1]:
+            if isinstance(parent, dict) and part in parent:
+                parent = parent[part]
+            elif isinstance(parent, list) and part.isdigit() and int(part) < len(parent):
+                parent = parent[int(part)]
+            else:
+                ok = False
+                break
+        if not ok:
+            continue
+        last = parts[-1]
+        if isinstance(parent, dict) and last in parent:
+            try:
+                parent[last] = convert(parent[last], type_name)
+            except Exception:  # noqa: BLE001 -- leave the JSON value as-is
+                pass
+        elif isinstance(parent, list) and last.isdigit() and int(last) < len(parent):
+            try:
+                parent[int(last)] = convert(parent[int(last)], type_name)
+            except Exception:  # noqa: BLE001
+                pass
+    return body
+
+
+def decode_binary(value: Any) -> Any:
+    """Undo json_safe()'s {"$binary": <base64>} wrapper."""
+    if isinstance(value, dict) and set(value.keys()) == {"$binary"}:
+        return base64.b64decode(value["$binary"])
+    return value
+
+
+def parse_iso_datetime(value: Any) -> Any:
+    if isinstance(value, str):
+        text = value.replace("Z", "+00:00")
+        return _dt.datetime.fromisoformat(text)
+    return value
+
+
+def utcnow() -> _dt.datetime:
+    return _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None)
+
+
+def strip_migration_envelope(doc: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Split a Couchbase document into (body, _migration envelope)."""
+    body = dict(doc)
+    envelope = body.pop("_migration", None) or {}
+    return body, envelope
+
+
+class SeenRecently:
+    """Bounded memory of recently applied (key, version) pairs, so a poller that
+    deliberately re-reads an overlap window doesn't apply the same write twice."""
+
+    def __init__(self, limit: int = 200_000):
+        from collections import OrderedDict
+
+        self._items: "OrderedDict[tuple[str, int], None]" = OrderedDict()
+        self._limit = limit
+
+    def add(self, item: tuple[str, int]) -> bool:
+        if item in self._items:
+            return False
+        self._items[item] = None
+        if len(self._items) > self._limit:
+            self._items.popitem(last=False)
+        return True

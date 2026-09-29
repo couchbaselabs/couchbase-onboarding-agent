@@ -9,12 +9,23 @@ from pydantic import BaseModel, Field, computed_field, field_validator
 
 from app.models.enums import (
     BottleneckKind,
+    CdcMethod,
     MigrationPhase,
     MigrationStrategy,
     SourceType,
+    SyncStage,
     ValidationCheckId,
     ValidationSeverity,
 )
+
+# Every connection field that holds a credential. These are masked in every API
+# response and websocket frame (see redact_record) and encrypted at rest in the
+# state file (see core/store.py), so a GET /api/migrations never hands source or
+# destination passwords back to a browser.
+SECRET_FIELDS: frozenset[str] = frozenset({
+    "password", "aws_secret_access_key", "aws_session_token", "cosmos_key", "ca_cert_pem",
+})
+REDACTED = "********"
 
 # ---------------------------------------------------------------------------
 # Source connection configuration
@@ -45,6 +56,16 @@ class SourceConnectionConfig(BaseModel):
     password: Optional[str] = Field(None, repr=False)
     use_tls: bool = False
     ca_cert_path: Optional[str] = None
+    ca_cert_pem: Optional[str] = Field(
+        None, repr=False,
+        description="PEM-encoded CA certificate to trust for this source, pasted in the wizard. "
+        "Takes precedence over ca_cert_path (which must be a path inside the backend container).",
+    )
+    tls_skip_verify: bool = Field(
+        False,
+        description="Disable TLS certificate verification for this source. Only for test clusters "
+        "with self-signed certificates -- the validator flags it as a warning.",
+    )
 
     # -- Redis specifics --
     redis_db_index: int = 0
@@ -103,6 +124,13 @@ class CouchbaseConnectionConfig(BaseModel):
     capella_project_id: Optional[str] = None
     use_tls: bool = True
     ca_cert_path: Optional[str] = None
+    ca_cert_pem: Optional[str] = Field(None, repr=False)
+    tls_skip_verify: bool = Field(
+        False,
+        description="Disable TLS certificate verification for management REST calls and "
+        "cbbackupmgr. Capella's management endpoint presents a Couchbase-issued CA; paste that "
+        "CA into ca_cert_pem instead of skipping verification where possible.",
+    )
 
     @field_validator("connection_string")
     @classmethod
@@ -161,6 +189,12 @@ class SourceTopologySnapshot(BaseModel):
     total_estimated_size_bytes: Optional[int] = None
     supports_cdc: bool = False
     cdc_notes: Optional[str] = None
+    # What continuous sync gives you on this source, so the wizard can say it
+    # plainly instead of burying it in cdc_notes.
+    cdc_method: Optional[CdcMethod] = None
+    cdc_resumable: bool = False          # survives a backend restart without a re-scan
+    cdc_captures_deletes: bool = False   # deletes flow through CDC (otherwise via reconciliation)
+    reverse_sync_supported: bool = False  # post-cutover fallback can write back to this source
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +257,24 @@ class MigrationPlanCreate(BaseModel):
     containers: list[ContainerMigrationSpec] = Field(default_factory=list)
     concurrency: int = Field(8, ge=1, le=64)
     rate_limit_docs_per_sec: Optional[int] = None
+    # -- continuous sync / rollback options --
+    reconcile_interval_minutes: int = Field(
+        60, ge=0, le=7 * 24 * 60,
+        description="How often a running continuous sync compares source and destination keys "
+        "to remove documents deleted at the source (0 disables). This is how deletes reach "
+        "Couchbase for sources whose change capture can't see them.",
+    )
+    journal_overwrites: bool = Field(
+        True,
+        description="Before overwriting or deleting a document that already existed in a "
+        "destination collection this migration didn't create, save its prior version so "
+        "rollback can restore it.",
+    )
+    create_destination_indexes: bool = Field(
+        True,
+        description="Create the small GSI indexes verification, rollback and fallback sync "
+        "query with (on _migration.migration_id and META().cas).",
+    )
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -272,6 +324,79 @@ class BottleneckFinding(BaseModel):
     auto_remediated: bool = False
 
 
+class ReconcileStatus(BaseModel):
+    running: bool = False
+    last_started_at: Optional[datetime] = None
+    last_finished_at: Optional[datetime] = None
+    last_result: Optional[str] = None
+    deletes_applied_total: int = 0
+    missing_in_destination: int = 0  # last run: source keys not found in Couchbase
+
+
+class FailedEvent(BaseModel):
+    """A change event that still failed after retries. Recorded (most recent 100)
+    rather than blocking the stream; re-running reconciliation or a bulk copy of
+    that container repairs it."""
+    container: str
+    key: Optional[str] = None
+    op: str
+    error: str
+    at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class SyncState(BaseModel):
+    stage: SyncStage = SyncStage.IDLE
+    capture_started_at: Optional[datetime] = None
+    bulk_copy_started_at: Optional[datetime] = None
+    bulk_copy_finished_at: Optional[datetime] = None
+    caught_up_at: Optional[datetime] = None
+    drain_requested_at: Optional[datetime] = None
+    last_event_at: Optional[datetime] = None
+    last_checkpoint_at: Optional[datetime] = None
+    stream_restarts: int = 0
+    last_stream_error: Optional[str] = None
+    cdc_method: Optional[CdcMethod] = None
+    reconcile: ReconcileStatus = Field(default_factory=ReconcileStatus)
+
+
+class RollbackState(BaseModel):
+    """What rollback needs to undo this migration's effect on the destination.
+    Captured before the first write, so it's accurate even after a crash."""
+    captured: bool = False
+    bucket_created_by_migration: bool = False
+    preexisting_collections: list[str] = Field(default_factory=list)  # "scope.collection"
+    owned_collections: list[str] = Field(default_factory=list)        # created by this migration
+    journal_keyspace: Optional[str] = None                             # "scope.collection"
+    journaled_docs: int = 0
+    completed_steps: list[str] = Field(default_factory=list)
+    last_summary: Optional[str] = None
+
+
+class FallbackState(BaseModel):
+    """Post-cutover reverse sync (Couchbase -> source). See core/fallback.py."""
+    active: bool = False
+    started_at: Optional[datetime] = None
+    stopped_at: Optional[datetime] = None
+    watermarks: dict[str, int] = Field(default_factory=dict)  # "scope.collection" -> CAS
+    changes_applied: int = 0
+    deletes_applied: int = 0
+    errors: int = 0
+    last_poll_at: Optional[datetime] = None
+    last_error: Optional[str] = None
+    lag_seconds: Optional[float] = None
+
+
+class ContainerVerification(BaseModel):
+    """Per-container count comparison produced at the end of a one-time load and
+    at cutover. source_count is None when the source wasn't counted."""
+    container: str
+    target: str  # scope.collection
+    source_count: Optional[int] = None
+    dest_count: Optional[int] = None
+    matched: Optional[bool] = None
+    note: Optional[str] = None
+
+
 class MigrationRecord(BaseModel):
     migration_id: UUID = Field(default_factory=uuid4)
     plan: MigrationPlanCreate
@@ -291,6 +416,13 @@ class MigrationRecord(BaseModel):
     # can resume CDC without re-reading from the beginning. See
     # app/core/connectors/base.py's stream_changes() contract.
     checkpoint: dict[str, Any] = Field(default_factory=dict)
+    sync: SyncState = Field(default_factory=SyncState)
+    rollback_state: RollbackState = Field(default_factory=RollbackState)
+    fallback: FallbackState = Field(default_factory=FallbackState)
+    failed_events: list[FailedEvent] = Field(default_factory=list)
+    cutover_at: Optional[datetime] = None
+    verification: list[ContainerVerification] = Field(default_factory=list)
+    verified_at: Optional[datetime] = None
 
 
 class MigrationApproval(BaseModel):
@@ -302,12 +434,44 @@ class MigrationApproval(BaseModel):
 class RollbackRequest(BaseModel):
     migration_id: UUID
     reason: str = "user_requested"
-    # This app never writes to the source -- every connector is read-only (see
-    # README "Why there's no separate backup step") -- so rollback means undoing
-    # the *destination* side: stop any active CDC and, if requested, delete every
-    # document this migration wrote to Couchbase (tagged via each doc's
-    # `_migration.migration_id` field -- see couchbase_loader.py).
+    # Forward migration never writes to the source, so rollback undoes the
+    # *destination* side: stop any active sync, drop collections this migration
+    # created, remove documents it wrote into pre-existing collections, and
+    # restore the documents it overwrote there from the pre-image journal.
     purge_destination_data: bool = True
+    drop_owned_collections: bool = True
+    restore_overwritten: bool = True
+    # Rolling back after cutover deletes data applications may have written to
+    # Couchbase since. Require an explicit opt-in (the UI asks for the
+    # migration name); a post-cutover fallback sync is the safer path.
+    confirm_after_cutover: bool = False
+    # Drop the destination bucket if this migration created it (self-managed
+    # clusters only; a Capella bucket is dropped from the Capella UI).
+    drop_created_bucket: bool = False
+
+
+class RollbackPlan(BaseModel):
+    """Dry run of what POST /rollback would do -- shown before the user confirms."""
+    migration_id: UUID
+    phase: MigrationPhase
+    allowed: bool
+    requires_cutover_confirmation: bool
+    steps: list[str]
+    warnings: list[str] = Field(default_factory=list)
+
+
+class ReconcileRequest(BaseModel):
+    migration_id: UUID
+    # Apply deletes even past RECONCILE_MAX_DELETE_FRACTION (the operator
+    # confirmed that a large deletion at the source is expected).
+    force: bool = False
+
+
+class FallbackStopRequest(BaseModel):
+    migration_id: UUID
+    # True: final drain, then mark FELL_BACK (the source is the system of record
+    # again). False: stop reverse sync and stay on Couchbase (COMPLETE).
+    fall_back_to_source: bool = False
 
 
 class ReplicationStopRequest(BaseModel):
@@ -365,3 +529,25 @@ class ReplicationModeRecommendationResponse(BaseModel):
     rationale: str
     considerations: list[str] = Field(default_factory=list)
     estimated_duration_seconds: Optional[float] = None
+
+
+# ---------------------------------------------------------------------------
+# Secret handling
+# ---------------------------------------------------------------------------
+
+
+def _mask_secrets(data: Any) -> Any:
+    if isinstance(data, dict):
+        return {
+            k: (REDACTED if k in SECRET_FIELDS and v else _mask_secrets(v))
+            for k, v in data.items()
+        }
+    if isinstance(data, list):
+        return [_mask_secrets(v) for v in data]
+    return data
+
+
+def redact_record(record: MigrationRecord) -> dict[str, Any]:
+    """JSON-ready copy of a record with every credential masked. Use this for
+    anything that leaves the backend (REST responses, websocket frames, logs)."""
+    return _mask_secrets(record.model_dump(mode="json"))

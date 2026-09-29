@@ -1,9 +1,14 @@
 """
-Lightweight persistence for migration records. Deliberately simple (JSON file on a
-mounted volume) so the reference implementation has no hard dependency on an
-additional database beyond the Couchbase EE instance already used for agent memory.
-Swap this for a Couchbase collection or Postgres table in production if you need
-multiple backend replicas.
+Persistence for migration records: a JSON file on a mounted volume, so the
+default deployment needs no database beyond the Couchbase instance already used
+for agent memory.
+
+- Credentials inside each record are encrypted at rest (core/secrets.py).
+- Writes are atomic (temp file + rename), so a crash mid-write can't truncate the
+  file and lose every migration's checkpoint.
+
+Run a single backend replica with this store (the Helm chart does). Swap it for a
+Couchbase collection if you need several replicas.
 """
 from __future__ import annotations
 
@@ -11,10 +16,12 @@ import asyncio
 import json
 import logging
 import os
+import tempfile
 from pathlib import Path
 from uuid import UUID
 
 from app.config import get_settings
+from app.core.secrets import SecretBox
 from app.models.schemas import MigrationRecord
 
 logger = logging.getLogger(__name__)
@@ -44,21 +51,42 @@ class MigrationStore:
             return
         try:
             raw = json.loads(p.read_text())
-            for mid, data in raw.items():
-                self._records[mid] = MigrationRecord.model_validate(data)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Could not load migration state file %s: %s", p, exc)
+            logger.error("Could not parse migration state file %s: %s", p, exc)
+            return
+        box = SecretBox.instance()
+        for mid, data in raw.items():
+            try:
+                self._records[mid] = MigrationRecord.model_validate(box.decrypt_tree(data))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Skipping unreadable migration record %s: %s", mid, exc)
 
     def _persist(self) -> None:
         p = self._path()
-        os.makedirs(p.parent, exist_ok=True)
-        payload = {mid: json.loads(r.model_dump_json()) for mid, r in self._records.items()}
-        p.write_text(json.dumps(payload, indent=2, default=str))
+        p.parent.mkdir(parents=True, exist_ok=True)
+        box = SecretBox.instance()
+        payload = {
+            mid: box.encrypt_tree(r.model_dump(mode="json")) for mid, r in self._records.items()
+        }
+        fd, tmp = tempfile.mkstemp(prefix=".migrations.", dir=str(p.parent))
+        try:
+            with os.fdopen(fd, "w") as fh:
+                json.dump(payload, fh, indent=2, default=str)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, p)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
 
     async def save(self, record: MigrationRecord) -> None:
         async with self._lock:
             self._records[str(record.migration_id)] = record
-            self._persist()
+            await asyncio.to_thread(self._persist)
 
     async def get(self, migration_id: UUID) -> MigrationRecord | None:
         async with self._lock:
@@ -71,4 +99,4 @@ class MigrationStore:
     async def delete(self, migration_id: UUID) -> None:
         async with self._lock:
             self._records.pop(str(migration_id), None)
-            self._persist()
+            await asyncio.to_thread(self._persist)

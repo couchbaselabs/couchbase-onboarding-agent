@@ -28,32 +28,49 @@ checks. It:
     query, which does need at least a primary index -- see the note surfaced
     per-collection below if one's missing (this connector won't create one:
     still read-only for introspection purposes).
-  - Reports supports_cdc=True only for a self-managed Enterprise Edition
-    source: XDCR (what continuous replication actually uses -- see
-    couchbase_native.py) isn't available on Community Edition at all, and
-    isn't implemented here for a Capella source (a real gap, not a silent
-    assumption -- see couchbase_native.py's docstring, point 3).
+  - Continuous sync: an Enterprise Edition source uses XDCR (configured on
+    the source by couchbase_native.py). Community Edition has no XDCR and a
+    Capella source's XDCR is managed through Capella itself, so for those two
+    this connector provides stream_changes(): it polls N1QL for documents whose
+    META().cas is past a watermark (CAS is a hybrid-logical-clock timestamp, so
+    it orders writes in time). Keys, scopes and collections are kept as-is.
+    Deletes don't show up in that query; the engine's periodic reconciliation
+    (list_keys() against the destination) removes them. Polling needs the Query
+    service and an index; `CREATE INDEX ... ON <collection>(META().cas)` makes
+    each poll cheap (a primary index works, but scans).
 
-extract() is intentionally NOT a real implementation -- see above -- and
-raises immediately if ever called, rather than silently being dead code that
-looks like it works.
+extract() is intentionally NOT a real implementation -- bulk copy for every
+Couchbase source is cbbackupmgr -- and raises immediately if ever called.
 """
 from __future__ import annotations
 
 import asyncio
+import datetime as _dt
 import logging
-from collections.abc import Awaitable, Callable
+import time
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import timedelta
 from typing import Any
 
 import requests
-from couchbase.auth import PasswordAuthenticator
 from couchbase.cluster import Cluster
-from couchbase.exceptions import CouchbaseException
-from couchbase.options import ClusterOptions
+from couchbase.exceptions import CouchbaseException, DocumentNotFoundException
+from couchbase.n1ql import QueryScanConsistency
+from couchbase.options import ClusterOptions, QueryOptions
 
-from app.core.connectors.base import SourceConnector, SourceConnectorError, SourceDocument
-from app.models.enums import SourceType
+from app.config import get_settings
+
+from app.core.tls import requests_verify, sdk_authenticator, sdk_connection_string
+from app.core.connectors.base import (
+    CdcCapabilities,
+    ChangeEvent,
+    SourceConnector,
+    SourceConnectorError,
+    SourceDocument,
+    heartbeat,
+)
+from app.core.connectors.util import SeenRecently
+from app.models.enums import CdcMethod, SourceType
 from app.models.schemas import SourceConnectionConfig, SourceContainerStats, SourceTopologySnapshot
 
 logger = logging.getLogger(__name__)
@@ -68,7 +85,17 @@ class CouchbaseSourceConnector(SourceConnector):
 
     @property
     def supports_cdc(self) -> bool:
+        return True
+
+    @property
+    def uses_xdcr(self) -> bool:
         return self.config.source_type == SourceType.COUCHBASE_ENTERPRISE
+
+    @property
+    def capabilities(self) -> CdcCapabilities:
+        if self.uses_xdcr:
+            return CdcCapabilities(method=CdcMethod.XDCR, resumable=True, captures_deletes=True, reverse_sync=True)
+        return CdcCapabilities(method=CdcMethod.CAS_POLL, resumable=True, captures_deletes=False, reverse_sync=True)
 
     @property
     def _is_capella(self) -> bool:
@@ -87,10 +114,10 @@ class CouchbaseSourceConnector(SourceConnector):
         if not self.config.connection_string:
             raise SourceConnectorError("Couchbase source requires a connection string, e.g. couchbase://host1,host2.")
         try:
-            auth = PasswordAuthenticator(self.config.username or "", self.config.password or "")
+            auth = sdk_authenticator(self.config.username or "", self.config.password or "", self.config)
             opts = ClusterOptions(auth, network="external" if self.config.couchbase_external_network else "auto")
             opts.apply_profile("wan_development")
-            cluster = Cluster(self.config.connection_string, opts)
+            cluster = Cluster(sdk_connection_string(self.config.connection_string, self.config), opts)
             cluster.wait_until_ready(timedelta(seconds=timeout_s))
         except CouchbaseException as exc:
             raise SourceConnectorError(f"Could not connect to Couchbase source ({self.config.label}): {exc}") from exc
@@ -119,7 +146,7 @@ class CouchbaseSourceConnector(SourceConnector):
         try:
             resp = requests.get(
                 url, auth=(self.config.username or "", self.config.password or ""),
-                verify=self.config.ca_cert_path if self.config.ca_cert_path else False, timeout=15,
+                verify=requests_verify(self.config), timeout=15,
             )
             resp.raise_for_status()
         except requests.exceptions.HTTPError as exc:
@@ -164,7 +191,8 @@ class CouchbaseSourceConnector(SourceConnector):
     # -- introspection --------------------------------------------------------
 
     async def test_connection(self) -> SourceTopologySnapshot:
-        return await asyncio.to_thread(self._test_connection_sync)
+        snapshot = await asyncio.to_thread(self._test_connection_sync)
+        return self.describe_capabilities(snapshot)
 
     def _test_connection_sync(self) -> SourceTopologySnapshot:
         cluster = self._connect()
@@ -226,22 +254,27 @@ class CouchbaseSourceConnector(SourceConnector):
             ))
             total_count += count or 0
 
-        if self.supports_cdc:
+        queryable = all(c.estimated_count is not None for c in containers)
+        if self.uses_xdcr:
+            supports_cdc = True
             cdc_notes = (
                 "Continuous replication uses Couchbase's built-in XDCR, configured directly on the "
-                "source cluster (not this app's generic per-document CDC mechanism -- see "
-                "core/couchbase_native.py)."
+                "source cluster (see core/couchbase_native.py)."
             )
-        elif self._is_capella:
+        elif queryable:
+            supports_cdc = True
             cdc_notes = (
-                "Continuous replication from a Capella source isn't implemented: it would need XDCR "
-                "configured through Capella's own Management API rather than the classic REST API this "
-                "app uses for self-managed clusters. One-time migration only for now."
+                "Continuous sync polls the Query service for documents changed since the last poll "
+                "(by META().cas). For large collections create a CAS index first, e.g. "
+                "`CREATE INDEX idx_onboarding_cas ON <bucket>.<scope>.<collection>(META().cas)`. "
+                "Deletes reach the destination through periodic reconciliation."
             )
         else:
+            supports_cdc = False
             cdc_notes = (
-                "Continuous replication isn't available on Community Edition: it requires XDCR, which "
-                "is an Enterprise Edition / Capella feature. One-time migration only."
+                "Continuous sync from this edition polls the Query service, and at least one "
+                "collection has no usable index. Create a primary or META().cas index on each "
+                "collection (see the per-collection notes), then test the connection again."
             )
 
         return SourceTopologySnapshot(
@@ -251,7 +284,7 @@ class CouchbaseSourceConnector(SourceConnector):
             containers=containers,
             total_estimated_count=total_count or None,
             total_estimated_size_bytes=None,
-            supports_cdc=self.supports_cdc,
+            supports_cdc=supports_cdc,
             cdc_notes=cdc_notes,
         )
 
@@ -295,6 +328,96 @@ class CouchbaseSourceConnector(SourceConnector):
             "problem with your source cluster."
         )
 
+    # -- continuous sync (CE / Capella), reconciliation, fallback ------------------
+
+    async def capture_change_position(self, containers: list[str]) -> dict[str, Any]:
+        overlap_ns = get_settings().couchbase_cdc_overlap_s * 1_000_000_000
+        now_ns = time.time_ns()
+        return {c: {"cas": now_ns - overlap_ns} for c in containers}
+
+
+    async def stream_changes(
+        self, containers: list[str], checkpoint: dict[str, Any],
+    ) -> AsyncIterator[ChangeEvent]:  # type: ignore[override]
+        settings = get_settings()
+        cluster = await asyncio.to_thread(self._connect)
+        bucket = self._bucket()
+        overlap_ns = settings.couchbase_cdc_overlap_s * 1_000_000_000
+        page = settings.couchbase_cdc_page_size
+        watermark = {c: int((checkpoint.get(c) or {}).get("cas") or 0) for c in containers}
+        seen = SeenRecently()
+
+        def _query(container: str, since: int) -> list[dict[str, Any]]:
+            scope, collection = split_container(container)
+            statement = (
+                f"SELECT META(d).id AS id, META(d).cas AS cas, d AS doc "
+                f"FROM `{bucket}`.`{scope}`.`{collection}` AS d "
+                f"WHERE META(d).cas >= $since ORDER BY META(d).cas LIMIT {page}"
+            )
+            result = cluster.query(
+                statement,
+                QueryOptions(named_parameters={"since": since}, scan_consistency=QueryScanConsistency.REQUEST_PLUS),
+            )
+            return list(result.rows())
+
+        while True:
+            for container in containers:
+                since = watermark[container]
+                max_seen = since
+                while True:
+                    try:
+                        rows = await asyncio.to_thread(_query, container, since)
+                    except CouchbaseException as exc:
+                        raise SourceConnectorError(
+                            f"Change poll failed for '{container}' (does it have a primary or META().cas "
+                            f"index?): {exc}"
+                        ) from exc
+                    fresh = 0
+                    for row in rows:
+                        key, cas = row["id"], int(row["cas"])
+                        max_seen = max(max_seen, cas)
+                        if not seen.add((key, cas)):
+                            continue
+                        fresh += 1
+                        yield ChangeEvent(
+                            container=container, op="upsert",
+                            document=SourceDocument(key=key, body=row["doc"], container=container, source_key={"key": key}),
+                            checkpoint={"cas": max(since - overlap_ns, 0)},
+                            source_ts=_cas_to_datetime(cas),
+                        )
+                    if len(rows) < page or fresh == 0:
+                        break
+                    since = max_seen
+                watermark[container] = max(max_seen - overlap_ns, watermark[container])
+                yield ChangeEvent(container=container, op="checkpoint", checkpoint={"cas": watermark[container]})
+            yield heartbeat()
+            await asyncio.sleep(settings.couchbase_cdc_poll_interval_s)
+
+
+    async def list_keys(self, container: str) -> AsyncIterator[str]:
+        cluster = await asyncio.to_thread(self._connect)
+        scope, collection = split_container(container)
+        statement = f"SELECT RAW META().id FROM `{self._bucket()}`.`{scope}`.`{collection}`"
+        rows = await asyncio.to_thread(lambda: list(cluster.query(statement).rows()))
+        for key in rows:
+            yield key
+
+
+    async def apply_reverse(
+        self, container: str, op: str, key: str,
+        body: dict[str, Any] | None, source_key: dict[str, Any] | None, types: dict[str, str] | None = None,
+    ) -> None:
+        cluster = await asyncio.to_thread(self._connect)
+        scope, collection = split_container(container)
+        coll = cluster.bucket(self._bucket()).scope(scope).collection(collection)
+        if op == "delete":
+            try:
+                await asyncio.to_thread(coll.remove, key)
+            except DocumentNotFoundException:
+                pass
+            return
+        await asyncio.to_thread(coll.upsert, key, body or {})
+
 
 def _container_name(scope: str, collection: str) -> str:
     if scope == "_default":
@@ -305,3 +428,18 @@ def _container_name(scope: str, collection: str) -> str:
 def _looks_like_missing_index(exc: Exception) -> bool:
     text = str(exc)
     return any(marker.lower() in text.lower() for marker in _NO_INDEX_MARKERS)
+
+
+def split_container(container: str) -> tuple[str, str]:
+    """Inverse of _container_name(): "scope.collection" or bare "collection"."""
+    if "." in container:
+        scope, collection = container.split(".", 1)
+        return scope, collection
+    return "_default", container
+
+
+def _cas_to_datetime(cas: int) -> _dt.datetime | None:
+    try:
+        return _dt.datetime.utcfromtimestamp(cas / 1_000_000_000)
+    except (OverflowError, OSError, ValueError):
+        return None

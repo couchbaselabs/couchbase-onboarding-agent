@@ -5,8 +5,8 @@ sanitization collisions, a lightweight document-size sanity check, network
 latency, and TLS configuration.
 
 Every check produces a ValidationCheckResult; the report as a whole gates the
-"Approve migration" control in the UI, same contract as the sibling
-couchbase-migration-agent project's validator.
+"Approve migration" control in the UI: a failed ERROR check blocks approval,
+failed WARNING checks don't.
 """
 from __future__ import annotations
 
@@ -21,11 +21,12 @@ from app.core.connectors.base import SourceConnectorError
 from app.core.connectors.couchbase_source import CouchbaseSourceConnector
 from app.core.connectors.registry import get_connector
 from app.core.connectors.util import COUCHBASE_MAX_DOC_SIZE_BYTES
-from app.core.couchbase_client import CouchbaseClientError, CouchbaseClusterClient, sanitize_couchbase_name
+from app.core.couchbase_client import CouchbaseClientError, CouchbaseClusterClient
+from app.core.targets import target_for
 from app.models.enums import (
-    COUCHBASE_SOURCE_TYPES,
     CONTINUOUS_STRATEGIES,
     MigrationStrategy,
+    SourceType,
     ValidationCheckId,
     ValidationSeverity,
 )
@@ -51,8 +52,13 @@ class MigrationValidator:
         strategy: MigrationStrategy,
         containers: list[ContainerMigrationSpec],
         destination_bucket: str | None = None,
+        *,
+        reconcile_interval_minutes: int = 60,
+        journal_overwrites: bool = True,
     ):
         self.migration_id = migration_id
+        self.reconcile_interval_minutes = reconcile_interval_minutes
+        self.journal_overwrites = journal_overwrites
         self.source_config = source
         self.dest_config = destination
         self.strategy = strategy
@@ -77,9 +83,14 @@ class MigrationValidator:
             self._check_document_size(source_topology)
         if source_topology and dest_topology:
             self._check_capacity(source_topology, dest_topology)
+        if source_topology:
+            self._check_delete_propagation(source_topology)
+        if dest_topology:
+            self._check_rollback_safety(dest_topology)
 
         await self._check_xdcr_vbucket_compat()
         self._check_tls()
+        self._check_tls_verification()
 
         return ValidationReport(
             migration_id=self.migration_id, checks=self.checks,
@@ -179,10 +190,15 @@ class MigrationValidator:
             )
             return
         if source.supports_cdc:
+            method = source.cdc_method.value.replace("_", " ") if source.cdc_method else "change capture"
+            resumable = "resumes from a checkpoint after a restart" if source.cdc_resumable else (
+                "re-scans the source after a restart (its change notifications aren't durable)"
+            )
             self._add(
                 ValidationCheckId.CDC_SUPPORT, "Change-data-capture availability",
                 ValidationSeverity.ERROR, True,
-                "Source supports continuous change-data-capture for the selected replication mode.",
+                f"Continuous sync uses {method} and {resumable}."
+                + (f" {source.cdc_notes}" if source.cdc_notes else ""),
             )
         else:
             self._add(
@@ -206,8 +222,8 @@ class MigrationValidator:
         (7.2-8.0.2) uses. Catching this here, before approval, avoids wasting
         that same backup+restore time on a migration that was always going to
         fail at the XDCR step."""
-        if self.strategy not in CONTINUOUS_STRATEGIES or self.source_config.source_type not in COUCHBASE_SOURCE_TYPES:
-            return  # XDCR isn't involved at all otherwise
+        if self.strategy not in CONTINUOUS_STRATEGIES or self.source_config.source_type != SourceType.COUCHBASE_ENTERPRISE:
+            return  # XDCR is only used for Enterprise Edition sources
 
         source_connector = CouchbaseSourceConnector(self.source_config)
         try:
@@ -272,13 +288,10 @@ class MigrationValidator:
         by_target: dict[tuple[str, str], list[str]] = {}
         spec_by_name = {s.container_name: s for s in self.containers}
         for c in source.containers:
-            spec = spec_by_name.get(c.name)
-            if spec is not None and not spec.include:
+            spec = spec_by_name.get(c.name) or ContainerMigrationSpec(container_name=c.name)
+            if not spec.include:
                 continue
-            scope = sanitize_couchbase_name((spec.target_scope_name if spec else None) or "_default") \
-                if (spec and spec.target_scope_name) else "_default"
-            collection = sanitize_couchbase_name((spec.target_collection_name if spec else None) or c.name)
-            by_target.setdefault((scope, collection), []).append(c.name)
+            by_target.setdefault(target_for(self.source_config, spec), []).append(c.name)
 
         collisions = {k: v for k, v in by_target.items() if len(v) > 1}
         passed = not collisions
@@ -324,3 +337,91 @@ class MigrationValidator:
             "TLS is not enabled on both ends; Capella requires TLS in transit, and most managed "
             "source databases do too.",
         )
+
+    def _check_tls_verification(self) -> None:
+        skipped = [
+            name for name, cfg in (("source", self.source_config), ("destination", self.dest_config))
+            if getattr(cfg, "tls_skip_verify", False)
+        ]
+        self._add(
+            ValidationCheckId.TLS_VERIFICATION, "TLS certificate verification",
+            ValidationSeverity.WARNING, not skipped,
+            "Certificates are verified on every TLS connection." if not skipped else
+            f"Certificate verification is turned off for the {' and '.join(skipped)}. That's acceptable for a "
+            "test cluster with a self-signed certificate; for production, paste the CA certificate instead.",
+        )
+
+    def _check_delete_propagation(self, source: SourceTopologySnapshot) -> None:
+        if self.strategy not in CONTINUOUS_STRATEGIES or not source.supports_cdc:
+            return
+        if source.cdc_captures_deletes:
+            message = "Deletes at the source arrive through the change stream."
+            if self.reconcile_interval_minutes:
+                message += (
+                    f" Reconciliation also runs every {self.reconcile_interval_minutes} min as a safety net "
+                    "for anything missed during outages."
+                )
+            self._add(ValidationCheckId.DELETE_PROPAGATION, "Delete propagation",
+                      ValidationSeverity.INFO, True, message)
+            return
+        passed = bool(self.reconcile_interval_minutes)
+        self._add(
+            ValidationCheckId.DELETE_PROPAGATION, "Delete propagation",
+            ValidationSeverity.WARNING, passed,
+            (f"This source's change capture doesn't report deletes, so reconciliation compares keys every "
+             f"{self.reconcile_interval_minutes} min and removes documents deleted at the source.") if passed else
+            "This source's change capture doesn't report deletes and reconciliation is turned off, so "
+            "documents deleted at the source will stay in Couchbase until you run reconciliation manually.",
+        )
+
+    def _check_rollback_safety(self, dest: CouchbaseTopologySnapshot) -> None:
+        bucket = self.destination_bucket or ""
+        existing = set()
+        if bucket in dest.buckets:
+            try:
+                client = CouchbaseClusterClient(self.dest_config)
+                try:
+                    scopes = client.get_scopes_and_collections(bucket)
+                finally:
+                    client.close()
+                existing = {f"{s}.{c}" for s, cols in scopes.items() for c in cols}
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not list destination collections for the rollback check: %s", exc)
+        targets = {
+            "{}.{}".format(*target_for(self.source_config, spec)) for spec in self.containers if spec.include
+        }
+        shared = sorted(targets & existing)
+        if not shared:
+            self._add(
+                ValidationCheckId.ROLLBACK_SAFETY, "Rollback safety",
+                ValidationSeverity.INFO, True,
+                "Every target collection will be created by this migration, so rollback can remove "
+                "everything it wrote by dropping them.",
+            )
+            return
+        is_couchbase = self.source_config.source_type in (
+            SourceType.COUCHBASE, SourceType.COUCHBASE_ENTERPRISE, SourceType.COUCHBASE_CAPELLA,
+        )
+        uses_bulk = self.strategy in (MigrationStrategy.FULL_LOAD, MigrationStrategy.FULL_LOAD_AND_CDC)
+        if is_couchbase and uses_bulk:
+            message = (
+                f"{len(shared)} target collection(s) already exist ({', '.join(shared[:5])}). cbbackupmgr "
+                "restores into them without a migration tag, so rollback can't separate restored documents "
+                "from what was already there. Use new, empty collections if you need a clean rollback."
+            )
+            passed = False
+        elif self.journal_overwrites:
+            message = (
+                f"{len(shared)} target collection(s) already exist ({', '.join(shared[:5])}). Any document "
+                "this migration overwrites or deletes there is saved to a rollback journal first, so rollback "
+                "can put it back."
+            )
+            passed = True
+        else:
+            message = (
+                f"{len(shared)} target collection(s) already exist ({', '.join(shared[:5])}) and overwrite "
+                "journaling is off -- rollback can remove what this migration wrote but can't restore documents "
+                "it overwrote."
+            )
+            passed = False
+        self._add(ValidationCheckId.ROLLBACK_SAFETY, "Rollback safety", ValidationSeverity.WARNING, passed, message)

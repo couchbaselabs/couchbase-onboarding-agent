@@ -61,6 +61,7 @@ from urllib.parse import quote
 import requests
 
 from app.config import get_settings
+from app.core.tls import ca_file_for, requests_verify
 from app.models.schemas import CouchbaseConnectionConfig, SourceConnectionConfig
 
 logger = logging.getLogger(__name__)
@@ -104,6 +105,15 @@ def _escape_collection_string_part(name: str) -> str:
     --include-data and --map-data) -- otherwise a period in the name itself
     would be misread as a scope/collection separator."""
     return name.replace(".", "\\.")
+
+
+def _tls_args(config) -> list[str]:
+    """cbbackupmgr TLS flags: trust a supplied CA, or skip verification only
+    when the connection explicitly opted out (tls_skip_verify)."""
+    if getattr(config, "tls_skip_verify", False):
+        return ["--no-ssl-verify"]
+    ca_file = ca_file_for(config)
+    return ["--cacert", ca_file] if ca_file else []
 
 
 def _redact(args: tuple[str, ...]) -> list[str]:
@@ -245,8 +255,7 @@ class CbBackupMgrRunner:
             "--username", source.username or "",
             "--password", source.password or "",
         ]
-        if source.use_tls and not source.ca_cert_path:
-            args.append("--no-ssl-verify")
+        args += _tls_args(source)
         await self._run(*args)
 
     async def restore(
@@ -320,8 +329,7 @@ class CbBackupMgrRunner:
         # own documented fix for restoring into Capella specifically.
         if dest.is_capella:
             args.append("--capella")
-        if dest.use_tls and not dest.ca_cert_path:
-            args.append("--no-ssl-verify")
+        args += _tls_args(dest)
         await self._run(*args)
 
 
@@ -351,7 +359,7 @@ class XdcrManager:
         return (self.source.username or "", self.source.password or "")
 
     def _verify(self):
-        return self.source.ca_cert_path if self.source.ca_cert_path else False
+        return requests_verify(self.source)
 
     def list_remote_cluster_refs(self) -> list[dict[str, Any]]:
         resp = requests.get(

@@ -11,13 +11,13 @@ import re
 from datetime import timedelta
 from typing import Any
 
-from couchbase.auth import PasswordAuthenticator
 from couchbase.cluster import Cluster
 from couchbase.exceptions import CouchbaseException, ScopeAlreadyExistsException, CollectionAlreadyExistsException
 from couchbase.management.collections import CollectionSpec
 from couchbase.options import ClusterOptions
 import requests
 
+from app.core.tls import requests_verify, sdk_authenticator, sdk_connection_string
 from app.models.schemas import CouchbaseConnectionConfig, CouchbaseNode, CouchbaseTopologySnapshot
 
 logger = logging.getLogger(__name__)
@@ -54,10 +54,10 @@ class CouchbaseClusterClient:
         if self._cluster is not None:
             return self._cluster
         try:
-            auth = PasswordAuthenticator(self.config.username, self.config.password)
+            auth = sdk_authenticator(self.config.username, self.config.password, self.config)
             opts = ClusterOptions(auth)
             opts.apply_profile("wan_development")
-            cluster = Cluster(self.config.connection_string, opts)
+            cluster = Cluster(sdk_connection_string(self.config.connection_string, self.config), opts)
             cluster.wait_until_ready(timedelta(seconds=timeout_s))
             self._cluster = cluster
             return cluster
@@ -90,7 +90,7 @@ class CouchbaseClusterClient:
             resp = requests.get(
                 url,
                 auth=(self.config.username, self.config.password),
-                verify=self.config.ca_cert_path if self.config.ca_cert_path else False,
+                verify=requests_verify(self.config),
                 timeout=15,
             )
             resp.raise_for_status()
@@ -118,7 +118,7 @@ class CouchbaseClusterClient:
         url = f"{self._mgmt_base_url()}{path}"
         return requests.post(
             url, auth=(self.config.username, self.config.password), data=data,
-            verify=self.config.ca_cert_path if self.config.ca_cert_path else False, timeout=30,
+            verify=requests_verify(self.config), timeout=30,
         )
 
     # -- introspection ----------------------------------------------------
@@ -226,6 +226,17 @@ class CouchbaseClusterClient:
         if resp.status_code not in (200, 202):
             raise CouchbaseClientError(f"Failed to create bucket {name!r}: {resp.status_code} {resp.text}")
         return True
+
+    def drop_bucket(self, name: str) -> None:
+        """Delete a bucket (self-managed clusters only). Used by rollback when the
+        operator asked to remove a bucket this migration created."""
+        url = f"{self._mgmt_base_url()}/pools/default/buckets/{name}"
+        resp = requests.delete(
+            url, auth=(self.config.username, self.config.password),
+            verify=requests_verify(self.config), timeout=60,
+        )
+        if resp.status_code not in (200, 404):
+            raise CouchbaseClientError(f"Failed to drop bucket {name!r}: {resp.status_code} {resp.text}")
 
     def ensure_scope_and_collection(self, bucket: str, scope: str, collection: str) -> None:
         """Idempotently create `scope`/`collection` in `bucket` via the SDK's

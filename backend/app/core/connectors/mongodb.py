@@ -10,9 +10,14 @@ pattern the other four connectors follow).
   per collection for the wizard's schema preview.
 - extract(): a full collection scan via find(), batched, with BSON types (ObjectId,
   datetime, Decimal128, Binary, DBRef) converted to JSON-safe values.
+- capture_change_position(): opens a change stream per collection before the
+  bulk copy and records its resume token (or the cluster's operationTime), so
+  writes made during the copy are replayed afterwards.
 - stream_changes(): MongoDB Change Streams, the native CDC mechanism -- resumable
   via a resume token (opaque, returned by the driver) persisted as this
-  connector's checkpoint.
+  connector's checkpoint. Captures inserts, updates, replaces and deletes.
+- apply_reverse(): post-cutover fallback writes (replace/delete by _id), with
+  ObjectId/date/Decimal128/binary values restored from the recorded type hints.
 """
 from __future__ import annotations
 
@@ -23,29 +28,91 @@ import threading
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
-from bson import ObjectId
+import datetime as _dt
+import decimal
+
+from bson import Binary, ObjectId, Timestamp
 from bson.decimal128 import Decimal128
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
 
-from app.core.connectors.base import ChangeEvent, SourceConnector, SourceConnectorError, SourceDocument
-from app.core.connectors.util import IDLE, bridge_blocking_batches, json_safe, make_key
-from app.models.enums import SourceType
+from app.core.connectors.base import (
+    CdcCapabilities,
+    ChangeEvent,
+    SourceConnector,
+    SourceConnectorError,
+    SourceDocument,
+    heartbeat,
+)
+from app.core.tls import ca_file_for
+from app.core.connectors.util import (
+    IDLE,
+    apply_type_hints,
+    bridge_blocking_batches,
+    decode_binary,
+    json_safe_typed,
+    make_key,
+    parse_iso_datetime,
+)
+from app.models.enums import CdcMethod, SourceType
 from app.models.schemas import SourceConnectionConfig, SourceContainerStats, SourceTopologySnapshot
 
 logger = logging.getLogger(__name__)
 
 
-def _transform_value(value: Any) -> Any:
+def _bson_hook(value: Any) -> tuple[Any, str] | None:
     if isinstance(value, ObjectId):
-        return str(value)
+        return str(value), "oid"
     if isinstance(value, Decimal128):
-        return float(value.to_decimal())
-    return json_safe(value)
+        return float(value.to_decimal()), "decimal128"
+    if isinstance(value, _dt.datetime):
+        return value.isoformat(), "date"
+    if isinstance(value, (bytes, Binary)):
+        import base64
+
+        return {"$binary": base64.b64encode(bytes(value)).decode("ascii")}, "binary"
+    return None
 
 
-def _transform_doc(raw: dict) -> dict:
-    return {k: _transform_value(v) for k, v in raw.items()}
+def _transform_doc(raw: dict) -> tuple[dict, dict[str, str]]:
+    types: dict[str, str] = {}
+    body = json_safe_typed(raw, _bson_hook, types)
+    return body, types
+
+
+def _to_source_document(container: str, raw: dict) -> SourceDocument:
+    raw_id = raw.get("_id")
+    doc_id = str(raw_id)
+    body, types = _transform_doc(raw)
+    body["_id"] = doc_id
+    return SourceDocument(
+        key=make_key(container, doc_id), body=body, container=container,
+        source_key={"_id": doc_id}, types=types or None,
+    )
+
+
+def _from_hint(value: Any, type_name: str) -> Any:
+    if type_name == "oid":
+        return ObjectId(value)
+    if type_name == "date":
+        return parse_iso_datetime(value)
+    if type_name == "decimal128":
+        return Decimal128(decimal.Decimal(str(value)))
+    if type_name == "binary":
+        return Binary(decode_binary(value))
+    return value
+
+
+def _checkpoint_kwargs(value: Any) -> dict[str, Any]:
+    """Translate a stored checkpoint into watch() arguments. Two forms: a change
+    stream resume token ({"_data": ...}) or an operation time recorded before a
+    bulk copy ({"$ts": {"t": ..., "i": ...}})."""
+    if not value:
+        return {}
+    if isinstance(value, dict) and "$ts" in value:
+        ts = value["$ts"]
+        return {"start_at_operation_time": Timestamp(int(ts["t"]), int(ts["i"]))}
+    return {"resume_after": value}
 
 
 class MongoDBConnector(SourceConnector):
@@ -57,6 +124,12 @@ class MongoDBConnector(SourceConnector):
     def supports_cdc(self) -> bool:
         return True
 
+    @property
+    def capabilities(self) -> CdcCapabilities:
+        return CdcCapabilities(
+            method=CdcMethod.CHANGE_STREAM, resumable=True, captures_deletes=True, reverse_sync=True,
+        )
+
     def _connect(self) -> MongoClient:
         if self._client is not None:
             return self._client
@@ -67,8 +140,11 @@ class MongoDBConnector(SourceConnector):
             kwargs["password"] = self.config.password
         if self.config.use_tls:
             kwargs["tls"] = True
-            if self.config.ca_cert_path:
-                kwargs["tlsCAFile"] = self.config.ca_cert_path
+            ca_file = ca_file_for(self.config)
+            if ca_file:
+                kwargs["tlsCAFile"] = ca_file
+            if self.config.tls_skip_verify:
+                kwargs["tlsAllowInvalidCertificates"] = True
         try:
             client = MongoClient(self.config.connection_string, **kwargs)
             client.admin.command("ping")
@@ -154,7 +230,7 @@ class MongoDBConnector(SourceConnector):
             total_count += count
             total_size += size
 
-        return SourceTopologySnapshot(
+        return self.describe_capabilities(SourceTopologySnapshot(
             source_type=SourceType.MONGODB,
             server_version=server_version,
             server_edition=f"MongoDB {server_version} ({'replica set' if is_replica_set else 'standalone'})",
@@ -163,7 +239,7 @@ class MongoDBConnector(SourceConnector):
             total_estimated_size_bytes=total_size or None,
             supports_cdc=is_replica_set,
             cdc_notes=cdc_notes,
-        )
+        ))
 
     # -- extraction -------------------------------------------------------------
 
@@ -193,12 +269,7 @@ class MongoDBConnector(SourceConnector):
                         cursor = coll.find({}, no_cursor_timeout=no_cursor_timeout).batch_size(batch_size)
                         try:
                             for raw in cursor:
-                                doc_id = str(raw.get("_id"))
-                                body = _transform_doc(raw)
-                                body["_id"] = doc_id
-                                batch.append(SourceDocument(
-                                    key=make_key(container, doc_id), body=body, container=container,
-                                ))
+                                batch.append(_to_source_document(container, raw))
                                 if len(batch) >= batch_size:
                                     q.put(batch)
                                     batch = []
@@ -229,63 +300,147 @@ class MongoDBConnector(SourceConnector):
 
     # -- change data capture -----------------------------------------------------
 
+    async def capture_change_position(self, containers: list[str]) -> dict[str, Any]:
+        return await asyncio.to_thread(self._capture_sync, containers)
+
+    def _capture_sync(self, containers: list[str]) -> dict[str, Any]:
+        db = self._db()
+        out: dict[str, Any] = {}
+        op_time = None
+        for container in containers:
+            token = None
+            try:
+                with db[container].watch(full_document="updateLookup", max_await_time_ms=100) as stream:
+                    stream.try_next()
+                    token = stream.resume_token
+            except PyMongoError as exc:
+                raise SourceConnectorError(
+                    f"Could not open a change stream on '{container}' (change streams need a replica "
+                    f"set or sharded cluster): {exc}"
+                ) from exc
+            if token is None:
+                if op_time is None:
+                    op_time = self._connect().admin.command("ping").get("operationTime")
+                if op_time is not None:
+                    token = {"$ts": {"t": op_time.time, "i": op_time.inc}}
+            if token is not None:
+                out[container] = token
+        return out
+
     async def stream_changes(
         self, containers: list[str], checkpoint: dict[str, Any],
     ) -> AsyncIterator[ChangeEvent]:
         """Watches every container's Change Stream concurrently -- one background
-        thread per container, all feeding a single shared queue -- rather than one
-        at a time, since a change stream blocks indefinitely waiting for the next
-        event and containers must be watched in parallel, not sequentially."""
+        thread per container, all feeding a single shared queue -- since a change
+        stream blocks waiting for the next event and containers must be watched in
+        parallel. Errors surface to the engine, which restarts from the last
+        persisted resume token."""
         db = self._db()
-        q: queue.Queue = queue.Queue(maxsize=32)
+        q: queue.Queue = queue.Queue(maxsize=256)
+        stop = threading.Event()
 
         def _watch_one(container: str) -> None:
-            resume_token = checkpoint.get(container)
             try:
-                coll = db[container]
-                kwargs: dict[str, Any] = {"full_document": "updateLookup"}
-                if resume_token:
-                    kwargs["resume_after"] = resume_token
-                with coll.watch(**kwargs) as stream:
-                    for change in stream:
-                        q.put((container, change))
+                kwargs: dict[str, Any] = {"full_document": "updateLookup", "max_await_time_ms": 1000}
+                kwargs.update(_checkpoint_kwargs(checkpoint.get(container)))
+                with db[container].watch(**kwargs) as stream:
+                    while not stop.is_set() and stream.alive:
+                        change = stream.try_next()
+                        if change is not None:
+                            q.put((container, change))
             except Exception as exc:  # noqa: BLE001
                 q.put((container, SourceConnectorError(
                     f"MongoDB change stream failed for collection '{container}': {exc}"
                 )))
 
-        threads = [
-            threading.Thread(target=_watch_one, args=(c,), daemon=True) for c in containers
-        ]
+        threads = [threading.Thread(target=_watch_one, args=(c,), daemon=True) for c in containers]
         for t in threads:
             t.start()
 
-        while True:
-            try:
-                container, change = await asyncio.to_thread(q.get, True, 2.0)
-            except queue.Empty:
-                # Regular heartbeat so MigrationEngine can notice a stop request
-                # even during a quiet period with no source changes on any container.
-                yield ChangeEvent(container="*", op="heartbeat")
-                continue
-            if isinstance(change, BaseException):
-                raise change
+        try:
+            while True:
+                try:
+                    container, change = await asyncio.to_thread(q.get, True, 2.0)
+                except queue.Empty:
+                    yield heartbeat()
+                    continue
+                if isinstance(change, BaseException):
+                    raise change
 
-            op_type = change.get("operationType")
-            token = change.get("_resume_token")
-            doc_key = change.get("documentKey", {})
-            mongo_id = str(doc_key.get("_id")) if doc_key else None
-            if op_type in ("insert", "update", "replace") and change.get("fullDocument") is not None:
-                body = _transform_doc(change["fullDocument"])
-                body["_id"] = mongo_id
-                yield ChangeEvent(
-                    container=container, op="upsert",
-                    document=SourceDocument(key=make_key(container, mongo_id), body=body, container=container),
-                    checkpoint=token,
-                )
-            elif op_type == "delete" and mongo_id:
-                yield ChangeEvent(
-                    container=container, op="delete", key=make_key(container, mongo_id), checkpoint=token,
-                )
-            # "invalidate"/"drop"/other op types: nothing meaningful to replicate;
-            # skip without advancing the checkpoint for this event.
+                op_type = change.get("operationType")
+                token = change.get("_id")
+                cluster_time = change.get("clusterTime")
+                source_ts = cluster_time.as_datetime().replace(tzinfo=None) if cluster_time else None
+                doc_key = change.get("documentKey", {})
+                mongo_id = str(doc_key.get("_id")) if doc_key else None
+                if op_type in ("insert", "update", "replace") and change.get("fullDocument") is not None:
+                    yield ChangeEvent(
+                        container=container, op="upsert",
+                        document=_to_source_document(container, change["fullDocument"]),
+                        checkpoint=token, source_ts=source_ts,
+                    )
+                elif op_type in ("insert", "update", "replace") and mongo_id:
+                    # fullDocument is null when the document was deleted before
+                    # the update lookup ran; a later delete event follows.
+                    continue
+                elif op_type == "delete" and mongo_id:
+                    yield ChangeEvent(
+                        container=container, op="delete", key=make_key(container, mongo_id),
+                        checkpoint=token, source_ts=source_ts,
+                    )
+                elif op_type in ("drop", "rename", "dropDatabase", "invalidate"):
+                    raise SourceConnectorError(
+                        f"MongoDB collection '{container}' was {op_type}ped at the source; its change "
+                        "stream ended. Re-run the bulk copy for it once it exists again."
+                    )
+        finally:
+            stop.set()
+
+    # -- reconciliation / fallback ----------------------------------------------
+
+    async def list_keys(self, container: str) -> AsyncIterator[str]:
+        db = self._db()
+
+        def _produce(q: queue.Queue) -> None:
+            try:
+                batch: list[str] = []
+                for raw in db[container].find({}, {"_id": 1}).batch_size(5000):
+                    batch.append(make_key(container, str(raw.get("_id"))))
+                    if len(batch) >= 5000:
+                        q.put(batch)
+                        batch = []
+                if batch:
+                    q.put(batch)
+            except Exception as exc:  # noqa: BLE001
+                q.put(SourceConnectorError(f"MongoDB key listing failed for '{container}': {exc}"))
+            finally:
+                q.put(None)
+
+        async for batch in bridge_blocking_batches(_produce):
+            if batch is IDLE:
+                continue
+            for key in batch:
+                yield key
+
+    async def apply_reverse(
+        self,
+        container: str,
+        op: str,
+        key: str,
+        body: dict[str, Any] | None,
+        source_key: dict[str, Any] | None,
+        types: dict[str, str] | None = None,
+    ) -> None:
+        raw_id: Any = (source_key or {}).get("_id")
+        if raw_id is None and body is not None:
+            raw_id = body.get("_id")
+        if raw_id is None:
+            raw_id = key.split("::", 1)[1] if "::" in key else key
+        id_value = _from_hint(raw_id, types["/_id"]) if types and types.get("/_id") else raw_id
+        coll = self._db()[container]
+        if op == "delete":
+            await asyncio.to_thread(coll.delete_one, {"_id": id_value})
+            return
+        doc = apply_type_hints(dict(body or {}), types, _from_hint)
+        doc["_id"] = id_value
+        await asyncio.to_thread(coll.replace_one, {"_id": id_value}, doc, True)

@@ -58,6 +58,37 @@ class MigrationPhase(str, Enum):
     ROLLED_BACK = "rolled_back"
     STOPPED = "stopped"              # continuous replication stopped without cutover
     CANCELLED = "cancelled"
+    # Post-cutover fallback: Couchbase is the system of record, and changes made
+    # there are being replicated back to the source so applications can fall
+    # back to it without losing writes (see core/fallback.py).
+    FALLBACK_SYNCING = "fallback_syncing"
+    FELL_BACK = "fell_back"          # applications moved back to the source
+
+
+class SyncStage(str, Enum):
+    """Where a continuous (CDC_LIVE / FULL_LOAD_AND_CDC) migration is inside its
+    replication lifecycle. Reported on MigrationRecord.sync so the UI can show
+    whether the destination is still catching up or tracking the source live."""
+    IDLE = "idle"
+    CAPTURING = "capturing"          # change-capture start position recorded, before bulk copy
+    BULK_COPY = "bulk_copy"          # full load running while changes queue at the source
+    CATCH_UP = "catch_up"            # applying changes that happened during the bulk copy
+    STREAMING = "streaming"          # caught up; applying changes as they happen
+    DRAINING = "draining"            # cutover requested; applying what's left before verifying
+    RECOVERING = "recovering"        # change stream dropped; retrying from the last checkpoint
+    STOPPED = "stopped"
+
+
+class CdcMethod(str, Enum):
+    """How a connector captures ongoing changes -- surfaced in the UI so operators
+    know which guarantees they get (resumable, sees deletes) per source."""
+    CHANGE_STREAM = "change_stream"          # MongoDB change streams
+    STREAM_SHARDS = "stream_shards"          # DynamoDB Streams
+    CHANGE_FEED = "change_feed"              # Cosmos DB change feed
+    WRITETIME_POLL = "writetime_poll"        # Cassandra WRITETIME() polling
+    KEYSPACE_EVENTS = "keyspace_events"      # Redis keyspace notifications
+    XDCR = "xdcr"                            # Couchbase EE -> Couchbase
+    CAS_POLL = "cas_poll"                    # Couchbase CE / Capella, via N1QL on META().cas
 
 
 class ValidationSeverity(str, Enum):
@@ -78,6 +109,9 @@ class ValidationCheckId(str, Enum):
     TLS_CONFIG = "tls_config"
     NAMING_COMPAT = "naming_compat"
     XDCR_VBUCKET_COMPAT = "xdcr_vbucket_compat"
+    TLS_VERIFICATION = "tls_verification"
+    DELETE_PROPAGATION = "delete_propagation"
+    ROLLBACK_SAFETY = "rollback_safety"
 
 
 class BottleneckKind(str, Enum):

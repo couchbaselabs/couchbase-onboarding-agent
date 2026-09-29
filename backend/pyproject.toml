@@ -1,0 +1,21 @@
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = ["tests/fixtures"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = [
+  "E501",   # long strings in operator-facing messages read better unwrapped
+  "B008",   # FastAPI Depends() in defaults is idiomatic
+  "UP007",  # Optional[...] kept for pydantic field readability
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]

@@ -13,15 +13,18 @@ land in a synthetic "(no-prefix)" container.
 - extract(): a full SCAN per container/prefix; each key's value is read with the
   command appropriate to its type (GET/HGETALL/LRANGE/SMEMBERS/ZRANGE/XRANGE) and
   wrapped in a small envelope that preserves the Redis type and TTL.
-- stream_changes(): Redis keyspace notifications (pub/sub). LIGHTER-DEPTH
-  IMPLEMENTATION (see README's connector-depth notes): this is Redis's only
-  built-in change-notification mechanism short of running as a replica speaking
-  the replication protocol, and it is fundamentally NOT durable -- pub/sub has no
-  backlog, so any event published while this app isn't actively subscribed
-  (restart, network blip, backpressure) is lost forever, not merely delayed. There
-  is no resumable checkpoint for this reason; the sibling four connectors' CDC
-  mechanisms are all resumable logs, this one is not, and that gap is inherent to
-  Redis's own notification model rather than a shortcut taken here.
+- stream_changes(): Redis keyspace notifications (pub/sub). Pub/sub has no
+  backlog, so this connector never relies on replaying it. Instead it keeps a
+  subscription open and records which keys changed ("dirty keys"), then re-reads
+  each dirty key's current value -- a missing key becomes a delete. That makes
+  the stream gap-free in the two places a plain subscriber loses data:
+    * During a bulk copy: capture_change_position() subscribes before the copy
+      starts, and the dirty keys are re-read once it finishes.
+    * After a restart or dropped connection: with no subscription to trust, the
+      stream subscribes first and then re-scans every key before going live.
+  Past REDIS_DIRTY_KEY_LIMIT distinct keys it re-scans instead of re-reading.
+  Redis Cluster publishes notifications per node; point this connector at a
+  single primary (or a non-clustered endpoint).
 
 This connector uses redis-py's native asyncio client throughout rather than the
 thread+queue bridge the other (synchronous-SDK) connectors use -- redis-py has
@@ -29,6 +32,7 @@ first-class asyncio support, so no bridging is needed.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
@@ -36,9 +40,18 @@ from typing import Any
 import redis.asyncio as aioredis
 from redis.exceptions import RedisError
 
-from app.core.connectors.base import ChangeEvent, SourceConnector, SourceConnectorError, SourceDocument
-from app.core.connectors.util import json_safe, make_key
-from app.models.enums import SourceType
+from app.config import get_settings
+from app.core.connectors.base import (
+    CdcCapabilities,
+    ChangeEvent,
+    SourceConnector,
+    SourceConnectorError,
+    SourceDocument,
+    heartbeat,
+)
+from app.core.tls import ca_file_for
+from app.core.connectors.util import decode_binary, json_safe, make_key
+from app.models.enums import CdcMethod, SourceType
 from app.models.schemas import SourceConnectionConfig, SourceContainerStats, SourceTopologySnapshot
 
 logger = logging.getLogger(__name__)
@@ -59,14 +72,99 @@ def _prefix_of(key: str) -> str:
     return key.split(":", 1)[0] if ":" in key else NO_PREFIX
 
 
+def _doc_key(redis_key: str) -> str:
+    return make_key("redis", redis_key)
+
+
+class _DirtyKeyTracker:
+    """Holds a keyevent subscription open and remembers which keys changed.
+    Runs as a background task on the connector's event loop."""
+
+    def __init__(self, client: aioredis.Redis, db_index: int, containers: set[str], limit: int):
+        self._client = client
+        self._db_index = db_index
+        self._containers = containers
+        self._limit = limit
+        self._keys: dict[str, None] = {}
+        self._pubsub = None
+        self._task: asyncio.Task | None = None
+        self._changed = asyncio.Event()
+        self.overflowed = False
+        self.error: BaseException | None = None
+
+    async def start(self) -> None:
+        self._pubsub = self._client.pubsub()
+        await self._pubsub.psubscribe(f"__keyevent@{self._db_index}__:*")
+        self._task = asyncio.create_task(self._run())
+
+    async def _run(self) -> None:
+        try:
+            while True:
+                message = await self._pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                if message is None:
+                    continue
+                key = _decode(message["data"])
+                if not isinstance(key, str) or _prefix_of(key) not in self._containers:
+                    continue
+                if self.overflowed:
+                    continue
+                self._keys[key] = None
+                if len(self._keys) > self._limit:
+                    self.overflowed = True
+                    self._keys.clear()
+                self._changed.set()
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:  # noqa: BLE001
+            self.error = exc
+            self._changed.set()
+
+    def drain(self, max_keys: int = 1000) -> list[str]:
+        out: list[str] = []
+        for key in list(self._keys.keys())[:max_keys]:
+            out.append(key)
+            del self._keys[key]
+        if not self._keys:
+            self._changed.clear()
+        return out
+
+    async def wait(self, timeout: float) -> None:
+        try:
+            await asyncio.wait_for(self._changed.wait(), timeout)
+        except asyncio.TimeoutError:
+            pass
+
+    async def close(self) -> None:
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+        if self._pubsub is not None:
+            try:
+                await self._pubsub.punsubscribe()
+                await self._pubsub.aclose()
+            except Exception:  # noqa: BLE001
+                pass
+
+
 class RedisConnector(SourceConnector):
     def __init__(self, config: SourceConnectionConfig):
         super().__init__(config)
         self._client: aioredis.Redis | None = None
+        self._tracker: _DirtyKeyTracker | None = None
 
     @property
     def supports_cdc(self) -> bool:
         return True
+
+    @property
+    def capabilities(self) -> CdcCapabilities:
+        # Not resumable in the log sense -- a restart re-scans (see module docstring).
+        return CdcCapabilities(
+            method=CdcMethod.KEYSPACE_EVENTS, resumable=False, captures_deletes=True, reverse_sync=True,
+        )
 
     def _connect(self) -> aioredis.Redis:
         if self._client is not None:
@@ -79,12 +177,18 @@ class RedisConnector(SourceConnector):
             kwargs["password"] = self.config.password
         if self.config.use_tls:
             kwargs["ssl"] = True
-            if self.config.ca_cert_path:
-                kwargs["ssl_ca_certs"] = self.config.ca_cert_path
+            ca_file = ca_file_for(self.config)
+            if ca_file:
+                kwargs["ssl_ca_certs"] = ca_file
+            if self.config.tls_skip_verify:
+                kwargs["ssl_cert_reqs"] = "none"
         self._client = aioredis.from_url(conn_str, **kwargs)
         return self._client
 
     async def close(self) -> None:
+        if self._tracker is not None:
+            await self._tracker.close()
+            self._tracker = None
         if self._client is not None:
             await self._client.aclose()
             self._client = None
@@ -114,10 +218,10 @@ class RedisConnector(SourceConnector):
         supports_cdc = "E" in notify_cfg
         if supports_cdc:
             cdc_notes = (
-                "Uses Redis keyspace notifications (pub/sub) for continuous sync. This is "
-                "best-effort and NOT durable -- events published while this app isn't actively "
-                "subscribed (restart, network blip) are lost, unlike the other four connectors' "
-                "resumable CDC mechanisms."
+                "Uses Redis keyspace notifications to track which keys change, then re-reads them. "
+                "Notifications aren't durable, so after a restart the sync re-scans every key "
+                "before going live again -- no changes are lost, but expect a re-scan's worth of "
+                "reads."
             )
         else:
             cdc_notes = (
@@ -153,7 +257,7 @@ class RedisConnector(SourceConnector):
             for prefix, count in sorted(prefix_counts.items(), key=lambda kv: -kv[1])[:200]
         ]
 
-        return SourceTopologySnapshot(
+        return self.describe_capabilities(SourceTopologySnapshot(
             source_type=SourceType.REDIS,
             server_version=server_version,
             server_edition=f"Redis {server_version} (logical db {self.config.redis_db_index})",
@@ -162,33 +266,87 @@ class RedisConnector(SourceConnector):
             total_estimated_size_bytes=None,  # Redis has no cheap per-key size accounting
             supports_cdc=supports_cdc,
             cdc_notes=cdc_notes,
-        )
+        ))
+
+    async def _read_keys(self, client: aioredis.Redis, keys: list[str]) -> dict[str, dict | None]:
+        """Read many keys with two pipelined round trips (TYPE+PTTL, then the
+        type-appropriate read) instead of three per key. Returns None for keys
+        that no longer exist."""
+        if not keys:
+            return {}
+        pipe = client.pipeline(transaction=False)
+        for key in keys:
+            pipe.type(key)
+            pipe.pttl(key)
+        meta = await pipe.execute()
+        kinds = {k: _decode(meta[i * 2]) for i, k in enumerate(keys)}
+        ttls = {k: meta[i * 2 + 1] for i, k in enumerate(keys)}
+
+        pipe = client.pipeline(transaction=False)
+        readable: list[str] = []
+        for key in keys:
+            kind = kinds[key]
+            if kind == "string":
+                pipe.get(key)
+            elif kind == "hash":
+                pipe.hgetall(key)
+            elif kind == "list":
+                pipe.lrange(key, 0, -1)
+            elif kind == "set":
+                pipe.smembers(key)
+            elif kind == "zset":
+                pipe.zrange(key, 0, -1, withscores=True)
+            elif kind == "stream":
+                pipe.xrange(key, count=10000)
+            else:
+                continue  # "none" (vanished) or an unsupported module type
+            readable.append(key)
+        values = await pipe.execute() if readable else []
+
+        out: dict[str, dict | None] = {k: None for k in keys}
+        for key, raw in zip(readable, values):
+            kind = kinds[key]
+            if raw is None:
+                continue
+            if kind == "string":
+                value: Any = _decode(raw)
+            elif kind == "hash":
+                value = {_decode(k): _decode(v) for k, v in raw.items()}
+            elif kind in ("list", "set"):
+                value = [_decode(v) for v in raw]
+            elif kind == "zset":
+                value = [{"member": _decode(m), "score": sc} for m, sc in raw]
+            else:
+                value = [
+                    {"id": _decode(entry_id), "fields": {_decode(k): _decode(v) for k, v in fields.items()}}
+                    for entry_id, fields in raw
+                ]
+            pttl = ttls.get(key)
+            ttl = max(1, int(pttl) // 1000) if isinstance(pttl, int) and pttl > 0 else None
+            out[key] = {"redis_type": kind, "redis_key": key, "value": value, "ttl": ttl}
+        return out
 
     async def _read_key(self, client: aioredis.Redis, key: str) -> dict | None:
-        key_type = _decode(await client.type(key))
-        ttl = await client.ttl(key)
-        value: Any
-        if key_type == "string":
-            value = _decode(await client.get(key))
-        elif key_type == "hash":
-            raw = await client.hgetall(key)
-            value = {_decode(k): _decode(v) for k, v in raw.items()}
-        elif key_type == "list":
-            value = [_decode(v) for v in await client.lrange(key, 0, -1)]
-        elif key_type == "set":
-            value = [_decode(v) for v in await client.smembers(key)]
-        elif key_type == "zset":
-            raw = await client.zrange(key, 0, -1, withscores=True)
-            value = [{"member": _decode(m), "score": s} for m, s in raw]
-        elif key_type == "stream":
-            raw = await client.xrange(key, count=10000)
-            value = [
-                {"id": _decode(entry_id), "fields": {_decode(k): _decode(v) for k, v in fields.items()}}
-                for entry_id, fields in raw
-            ]
-        else:
-            return None  # "none" (key vanished between SCAN and read) or an unsupported module type
-        return {"redis_type": key_type, "redis_key": key, "value": value, "ttl": ttl if ttl and ttl > 0 else None}
+        return (await self._read_keys(client, [key])).get(key)
+
+    def _documents(self, container: str, docs: dict[str, dict | None]) -> list[SourceDocument]:
+        return [
+            SourceDocument(key=_doc_key(k), body=v, container=container, source_key={"redis_key": k})
+            for k, v in docs.items() if v is not None
+        ]
+
+    async def _scan_container(self, client: aioredis.Redis, container: str, count: int) -> AsyncIterator[list[str]]:
+        pattern = f"{container}:*" if container != NO_PREFIX else "*"
+        cursor = 0
+        while True:
+            cursor, raw_keys = await client.scan(cursor=cursor, match=pattern, count=count)
+            keys = [_decode(k) for k in raw_keys]
+            if container == NO_PREFIX:
+                keys = [k for k in keys if ":" not in k]
+            if keys:
+                yield keys
+            if cursor == 0:
+                break
 
     # -- extraction -------------------------------------------------------------
 
@@ -201,61 +359,123 @@ class RedisConnector(SourceConnector):
     ) -> None:
         client = self._connect()
         for container in containers:
-            pattern = f"{container}:*" if container != NO_PREFIX else "*"
             batch: list[SourceDocument] = []
-            cursor = 0
-            while True:
-                cursor, keys = await client.scan(cursor=cursor, match=pattern, count=batch_size)
-                for raw_key in keys:
-                    key_str = _decode(raw_key)
-                    if container == NO_PREFIX and ":" in key_str:
-                        continue
-                    doc = await self._read_key(client, key_str)
-                    if doc is None:
-                        continue
-                    batch.append(SourceDocument(key=make_key("redis", key_str), body=doc, container=container))
-                    if len(batch) >= batch_size:
-                        await sink(batch)
-                        batch = []
-                if cursor == 0:
-                    break
+            async for keys in self._scan_container(client, container, batch_size):
+                batch.extend(self._documents(container, await self._read_keys(client, keys)))
+                if len(batch) >= batch_size:
+                    await sink(batch)
+                    batch = []
             if batch:
                 await sink(batch)
 
     # -- change data capture -----------------------------------------------------
 
+    async def _start_tracker(self, containers: list[str]) -> _DirtyKeyTracker:
+        if self._tracker is not None:
+            await self._tracker.close()
+        tracker = _DirtyKeyTracker(
+            self._connect(), self.config.redis_db_index, set(containers),
+            get_settings().redis_dirty_key_limit,
+        )
+        await tracker.start()
+        self._tracker = tracker
+        return tracker
+
+    async def capture_change_position(self, containers: list[str]) -> dict[str, Any]:
+        await self._start_tracker(containers)
+        # Marker only: its presence tells a restarted backend that a subscription
+        # existed before, so it must re-scan rather than trust a new one.
+        return {c: {"tracking": True} for c in containers}
+
     async def stream_changes(
         self, containers: list[str], checkpoint: dict[str, Any],
     ) -> AsyncIterator[ChangeEvent]:
         client = self._connect()
-        pubsub = client.pubsub()
-        db_index = self.config.redis_db_index
-        container_set = set(containers)
-        await pubsub.psubscribe(f"__keyevent@{db_index}__:*")
-        try:
-            while True:
-                message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=2.0)
-                if message is None:
-                    yield ChangeEvent(container="*", op="heartbeat")
-                    continue
-                channel = _decode(message["channel"])
-                # channel looks like "__keyevent@0__:set" / "__keyevent@0__:del" / ...
-                event = channel.rsplit(":", 1)[-1]
-                key = _decode(message["data"])
-                prefix = _prefix_of(key)
-                if prefix not in container_set:
-                    continue
-                if event in ("del", "expired", "evicted"):
-                    yield ChangeEvent(container=prefix, op="delete", key=make_key("redis", key))
-                    continue
-                doc = await self._read_key(client, key)
+        tracker = self._tracker
+        rescan = tracker is None
+        if tracker is None:
+            # No subscription survived from before (restart, reconnect, or CDC
+            # starting fresh here): subscribe first, then re-read everything.
+            tracker = await self._start_tracker(containers)
+        marker = {"tracking": True}
+
+        while True:
+            if tracker.error is not None:
+                raise SourceConnectorError(f"Redis keyspace subscription failed: {tracker.error}")
+            if rescan or tracker.overflowed:
+                if tracker.overflowed:
+                    logger.warning("Redis dirty-key limit exceeded; re-scanning all keys.")
+                    tracker.overflowed = False
+                rescan = False
+                for container in containers:
+                    async for keys in self._scan_container(client, container, 500):
+                        for doc in self._documents(container, await self._read_keys(client, keys)):
+                            yield ChangeEvent(container=container, op="upsert", document=doc, checkpoint=marker)
+                continue
+
+            keys = tracker.drain(500)
+            if not keys:
+                await tracker.wait(2.0)
+                if not tracker._keys and tracker.error is None:  # noqa: SLF001
+                    yield heartbeat()
+                continue
+            docs = await self._read_keys(client, keys)
+            for key, doc in docs.items():
+                container = _prefix_of(key)
                 if doc is None:
-                    yield ChangeEvent(container=prefix, op="delete", key=make_key("redis", key))
+                    yield ChangeEvent(container=container, op="delete", key=_doc_key(key), checkpoint=marker)
                 else:
                     yield ChangeEvent(
-                        container=prefix, op="upsert",
-                        document=SourceDocument(key=make_key("redis", key), body=doc, container=prefix),
+                        container=container, op="upsert", checkpoint=marker,
+                        document=SourceDocument(
+                            key=_doc_key(key), body=doc, container=container, source_key={"redis_key": key},
+                        ),
                     )
-        finally:
-            await pubsub.punsubscribe()
-            await pubsub.aclose()
+
+    # -- reconciliation / fallback ----------------------------------------------
+
+    async def list_keys(self, container: str) -> AsyncIterator[str]:
+        client = self._connect()
+        async for keys in self._scan_container(client, container, 1000):
+            for key in keys:
+                yield _doc_key(key)
+
+    async def apply_reverse(
+        self,
+        container: str,
+        op: str,
+        key: str,
+        body: dict[str, Any] | None,
+        source_key: dict[str, Any] | None,
+        types: dict[str, str] | None = None,
+    ) -> None:
+        client = self._connect()
+        redis_key = (source_key or {}).get("redis_key") or (body or {}).get("redis_key")
+        if not redis_key:
+            redis_key = key.split("::", 1)[1] if key.startswith("redis::") else key
+        if op == "delete":
+            await client.delete(redis_key)
+            return
+        body = body or {}
+        kind = body.get("redis_type", "string")
+        value = body.get("value")
+        pipe = client.pipeline(transaction=True)
+        pipe.delete(redis_key)
+        if kind == "string":
+            value = decode_binary(value)
+            pipe.set(redis_key, value if isinstance(value, (str, bytes, int, float)) else str(value))
+        elif kind == "hash" and value:
+            pipe.hset(redis_key, mapping={str(k): v for k, v in value.items()})
+        elif kind == "list" and value:
+            pipe.rpush(redis_key, *value)
+        elif kind == "set" and value:
+            pipe.sadd(redis_key, *value)
+        elif kind == "zset" and value:
+            pipe.zadd(redis_key, {str(e["member"]): float(e["score"]) for e in value})
+        elif kind == "stream" and value:
+            for entry in value:
+                pipe.xadd(redis_key, entry.get("fields") or {"_": ""}, id=entry.get("id", "*"))
+        ttl = body.get("ttl")
+        if ttl:
+            pipe.expire(redis_key, int(ttl))
+        await pipe.execute()
