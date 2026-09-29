@@ -6,7 +6,7 @@ couchbase==4.3.1
 requests==2.32.3
 httpx==0.28.1
 websockets==14.1
-python-multipart==0.0.20
+python-multipart==0.0.32
 cryptography==44.0.0
 
 # -- source connectors --
