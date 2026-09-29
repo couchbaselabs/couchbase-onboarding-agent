@@ -2,22 +2,22 @@
  * lucide icon props). Every value is a CSS custom property from theme.css, so
  * the same code renders correctly in light and dark mode. */
 export const colors = {
-  cbRed: "var(--cb-red)",
-  cbRedDim: "var(--cb-red-dim)",
-  cbRedBright: "var(--cb-red-bright)",
-  cbTeal: "var(--cb-teal)",
-  cbAmber: "var(--cb-amber)",
-  cbGreen: "var(--cb-green)",
-  cbBlue: "var(--cb-blue)",
-  bg0: "var(--bg-0)",
-  bg1: "var(--bg-1)",
-  bg2: "var(--bg-2)",
-  bg3: "var(--bg-3)",
-  borderSubtle: "var(--border-subtle)",
+  cbRed: "var(--red)",
+  cbRedDim: "var(--red-bg)",
+  cbRedBright: "var(--red-dim)",
+  cbTeal: "var(--teal)",
+  cbAmber: "var(--amber)",
+  cbGreen: "var(--green)",
+  cbBlue: "var(--blue)",
+  bg0: "var(--bg)",
+  bg1: "var(--card-bg)",
+  bg2: "var(--card-bg-alt)",
+  bg3: "var(--bg-hover)",
+  borderSubtle: "var(--border)",
   borderStrong: "var(--border-strong)",
-  textPrimary: "var(--text-primary)",
-  textSecondary: "var(--text-secondary)",
-  textMuted: "var(--text-muted)",
+  textPrimary: "var(--text)",
+  textSecondary: "var(--text-muted)",
+  textMuted: "var(--text-faint)",
 } as const;
 
 /** A translucent wash of `color` (any CSS color, including var()) for badge
@@ -48,6 +48,34 @@ export const statusColor = (status: string): string => {
       return colors.cbTeal;
     default:
       return colors.cbBlue;
+  }
+};
+
+export type Tone = "success" | "danger" | "warning" | "info" | "neutral";
+
+/** Badge tone for a migration phase (AOM badge classes: badge-<tone>). */
+export const phaseTone = (phase: string): Tone => {
+  switch (phase) {
+    case "complete":
+    case "validated":
+    case "rolled_back":
+      return "success";
+    case "awaiting_approval":
+    case "validation_failed":
+    case "rolling_back":
+    case "fell_back":
+    case "stopped":
+      return "warning";
+    case "failed":
+      return "danger";
+    case "migrating":
+    case "replicating":
+    case "validating":
+    case "verifying":
+    case "fallback_syncing":
+      return "info";
+    default:
+      return "neutral";
   }
 };
 

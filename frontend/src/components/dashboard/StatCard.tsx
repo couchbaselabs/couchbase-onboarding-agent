@@ -1,19 +1,25 @@
+/** A metric tile, as in the Agent Operations Manager: uppercase label, large
+ * value, optional hint. `inset` is for tiles shown inside another card. */
 export default function StatCard({
   label,
   value,
   sub,
+  inset = false,
+  valueColor,
 }: {
   label: string;
   value: string | number;
   sub?: string;
+  inset?: boolean;
+  valueColor?: string;
 }) {
   return (
-    <div className="cb-card" style={{ padding: 16 }}>
-      <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.03 }}>
-        {label}
+    <div className={`stat-card${inset ? " inset" : ""}`}>
+      <div className="stat-label">{label}</div>
+      <div className="stat-value" style={valueColor ? { color: valueColor } : undefined}>
+        {value}
       </div>
-      <div style={{ fontSize: 24, fontWeight: 700, marginTop: 6 }}>{value}</div>
-      {sub && <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 4 }}>{sub}</div>}
+      {sub && <div className="stat-hint">{sub}</div>}
     </div>
   );
 }

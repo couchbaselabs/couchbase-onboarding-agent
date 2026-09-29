@@ -24,11 +24,12 @@ const HAS_DATABASE_FIELD: SourceType[] = ["mongodb", "cassandra", "cosmosdb", ..
 const HAS_USERNAME_PASSWORD: SourceType[] = ["mongodb", "redis", "cassandra", ...CB_FAMILY];
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  // Wrapping label: the control inside is labelled without needing ids.
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-      <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)" }}>{label}</label>
+    <label className="field">
+      <span className="field-label">{label}</span>
       {children}
-    </div>
+    </label>
   );
 }
 
@@ -50,7 +51,7 @@ export default function SourceConfigForm({
   const isCapella = t === "couchbase_capella";
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+    <div className="form-grid">
       <Field label="Source type">
         <select
           value={t}
@@ -68,7 +69,7 @@ export default function SourceConfigForm({
           {SOURCE_TYPES.map((v) => (
             <Fragment key={v}>
               {v === "couchbase" && (
-                <option disabled style={{ borderTop: "1px solid var(--text-primary)", color: "transparent" }}>
+                <option disabled style={{ borderTop: "1px solid var(--text)", color: "transparent" }}>
                   {"─".repeat(24)}
                 </option>
               )}
@@ -79,7 +80,7 @@ export default function SourceConfigForm({
       </Field>
 
       {support && (
-        <div style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: -6 }}>
+        <div className="field-hint" style={{ marginTop: -6 }}>
           {support.platform} &middot; {support.versions}
         </div>
       )}
@@ -105,7 +106,7 @@ export default function SourceConfigForm({
       )}
 
       {t === "cassandra" && (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <div className="two-col">
           <Field label="Port">
             <input
               type="number"
@@ -134,7 +135,7 @@ export default function SourceConfigForm({
       )}
 
       {HAS_USERNAME_PASSWORD.includes(t) && (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <div className="two-col">
           <Field label="Username">
             <input value={value.username || ""} onChange={(e) => onChange({ username: e.target.value })} />
           </Field>
@@ -149,14 +150,14 @@ export default function SourceConfigForm({
       )}
 
       {(t === "mongodb" || t === "redis" || t === "cassandra" || CB_SELF_MANAGED.includes(t)) && (
-        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5 }}>
+        <label className="checkbox-row">
           <input type="checkbox" checked={!!value.use_tls} onChange={(e) => onChange({ use_tls: e.target.checked })} />
           Use TLS
         </label>
       )}
 
       {isCapella && (
-        <div style={{ fontSize: 11.5, color: "var(--text-muted)" }}>TLS is required and always enabled for Capella.</div>
+        <div className="field-hint">TLS is required and always enabled for Capella.</div>
       )}
 
       {(isCapella || (!!value.use_tls && (t === "mongodb" || t === "redis" || t === "cassandra" || CB_SELF_MANAGED.includes(t)))) && (
@@ -164,16 +165,15 @@ export default function SourceConfigForm({
       )}
 
       {CB_SELF_MANAGED.includes(t) && (
-        <label style={{ display: "flex", alignItems: "flex-start", gap: 8, fontSize: 12.5 }}>
+        <label className="checkbox-row">
           <input
             type="checkbox"
-            style={{ marginTop: 2 }}
             checked={!!value.couchbase_external_network}
             onChange={(e) => onChange({ couchbase_external_network: e.target.checked })}
           />
           <span>
             Cluster is on a cloud VM or Kubernetes (EC2, GKE, etc.)
-            <div style={{ color: "var(--text-muted)", fontSize: 11.5, marginTop: 3 }}>
+            <div className="field-hint" style={{ marginTop: 3 }}>
               Enable if the connection succeeds at first but then fails with "connection
               refused" once the SDK has the full cluster map. Also requires External Address /
               alternate addressing to already be configured on the source cluster itself
@@ -188,7 +188,7 @@ export default function SourceConfigForm({
           <Field label="AWS region">
             <input value={value.aws_region || ""} onChange={(e) => onChange({ aws_region: e.target.value })} placeholder="us-east-1" />
           </Field>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <div className="two-col">
             <Field label="Access key ID">
               <input
                 value={value.aws_access_key_id || ""}
@@ -236,7 +236,7 @@ export default function SourceConfigForm({
       )}
 
       {CB_FAMILY.includes(t) && (
-        <div style={{ fontSize: 11.5, color: "var(--text-muted)" }}>
+        <div className="field-hint">
           Couchbase-to-Couchbase bulk copy uses cbbackupmgr. Continuous sync uses XDCR from a
           self-managed Enterprise Edition source; from Community Edition or Capella it polls the
           Query service for changed documents (create a <code>META().cas</code> index on large
@@ -244,7 +244,7 @@ export default function SourceConfigForm({
         </div>
       )}
 
-      <div style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 4 }}>
+      <div style={{ fontSize: 11.5, color: "var(--text-faint)", marginTop: 4 }}>
         Allow-list this agent's IP address on the source database before testing the connection --
         see the README for the exact reachability requirements per source type.
       </div>

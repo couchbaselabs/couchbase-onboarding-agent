@@ -48,11 +48,11 @@ export default function RollbackDialog({
 
   const toggle = (key: keyof RollbackOptions, label: string, hint: string, show = true) =>
     show && (
-      <label style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 12.5 }}>
-        <input type="checkbox" style={{ marginTop: 2 }} checked={!!options[key]} onChange={(e) => setOptions({ ...options, [key]: e.target.checked })} />
+      <label className="checkbox-row">
+        <input type="checkbox" checked={!!options[key]} onChange={(e) => setOptions({ ...options, [key]: e.target.checked })} />
         <span>
           {label}
-          <div className="cb-muted">{hint}</div>
+          <div className="muted">{hint}</div>
         </span>
       </label>
     );
@@ -63,10 +63,10 @@ export default function RollbackDialog({
     <div className="cb-overlay" role="dialog" aria-modal="true" aria-labelledby="rollback-title" onClick={onClose}>
       <div className="cb-dialog" onClick={(e) => e.stopPropagation()}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-          <div id="rollback-title" style={{ display: "flex", gap: 8, alignItems: "center", fontWeight: 700, fontSize: 15 }}>
-            <Undo2 size={17} /> Roll back "{record.plan.name}"
-          </div>
-          <button className="cb-btn" style={{ padding: "4px 8px" }} onClick={onClose} aria-label="Close">
+          <h2 id="rollback-title" className="section-heading" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <Undo2 size={17} color="var(--red-dim)" /> Roll back &ldquo;{record.plan.name}&rdquo;
+          </h2>
+          <button className="icon-btn" onClick={onClose} aria-label="Close">
             <X size={14} />
           </button>
         </div>
@@ -83,15 +83,15 @@ export default function RollbackDialog({
             {plan.warnings.length > 0 && (
               <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 }}>
                 {plan.warnings.map((w, i) => (
-                  <div key={i} style={{ display: "flex", gap: 8, fontSize: 12.5, color: "var(--cb-amber)" }}>
-                    <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 2 }} />
+                  <div key={i} className="helper-banner">
+                    <AlertTriangle size={14} />
                     <span>{w}</span>
                   </div>
                 ))}
               </div>
             )}
-            <div className="cb-section-title">What will happen</div>
-            <ol style={{ margin: "0 0 14px", paddingLeft: 20, fontSize: 12.5, display: "flex", flexDirection: "column", gap: 4 }}>
+            <div className="card-title">What will happen</div>
+            <ol style={{ margin: "0 0 16px", paddingLeft: 20, fontSize: 13, lineHeight: 1.5, display: "flex", flexDirection: "column", gap: 4, color: "var(--text-muted)" }}>
               {plan.steps.map((s, i) => (
                 <li key={i}>{s}</li>
               ))}
@@ -100,7 +100,7 @@ export default function RollbackDialog({
         )}
 
         {needsName && (
-          <label style={{ display: "flex", flexDirection: "column", gap: 5, marginBottom: 14, fontSize: 12.5 }}>
+          <label className="field" style={{ marginBottom: 14, fontSize: 13 }}>
             <span>
               Type the migration name <strong>{record.plan.name}</strong> to confirm a rollback after cutover:
             </span>
@@ -108,13 +108,17 @@ export default function RollbackDialog({
           </label>
         )}
 
-        {error && <div style={{ color: "var(--cb-red-bright)", fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
+        {error && (
+          <div className="helper-banner helper-banner-danger" role="alert" style={{ marginBottom: 12 }}>
+            {error}
+          </div>
+        )}
 
         <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
-          <button className="cb-btn" onClick={onClose}>
+          <button className="btn btn-secondary" onClick={onClose}>
             Cancel
           </button>
-          <button className="cb-btn cb-btn-primary" disabled={!canRun} onClick={run}>
+          <button className="btn btn-primary" disabled={!canRun} onClick={run}>
             {running ? "Starting..." : "Roll back"}
           </button>
         </div>

@@ -4,6 +4,7 @@ import { AlertTriangle, MessageSquareText, Send, Wrench, X } from "lucide-react"
 import { api, ApiError } from "@/api/client";
 import { useMigrationSocket } from "@/hooks/useMigrationSocket";
 import type { BottleneckFinding } from "@/api/types";
+import { BrandMark } from "@/assets/CouchbaseLogo";
 
 interface ChatTurn {
   role: "user" | "assistant" | "alert";
@@ -72,65 +73,50 @@ export default function AgentPanel() {
 
   if (!open) {
     return (
-      <button
-        onClick={() => setOpen(true)}
-        className="cb-btn cb-btn-primary"
-        style={{
-          position: "fixed", bottom: 24, right: 24, borderRadius: 999,
-          height: 52, padding: "0 22px", display: "flex", alignItems: "center", justifyContent: "center",
-          gap: 9, fontSize: 14, boxShadow: "var(--shadow-lg)",
-        }}
-        aria-label="Ask the agent"
-      >
-        <MessageSquareText size={20} />
+      <button onClick={() => setOpen(true)} className="btn btn-primary agent-fab" aria-label="Ask the agent">
+        <MessageSquareText size={18} />
         Ask the agent
       </button>
     );
   }
 
   return (
-    <div
-      style={{
-        position: "fixed", bottom: 24, right: 24, width: 360, height: 480,
-        background: "var(--bg-1)", border: "1px solid var(--border-subtle)",
-        borderRadius: "var(--radius-md)", display: "flex", flexDirection: "column", overflow: "hidden",
-        boxShadow: "var(--shadow-lg)",
-      }}
-    >
-      <div
-        style={{
-          padding: "12px 14px", borderBottom: "1px solid var(--border-subtle)",
-          display: "flex", alignItems: "center", justifyContent: "space-between",
-        }}
-      >
-        <div style={{ fontSize: 13, fontWeight: 700 }}>Ask the agent</div>
-        <button onClick={() => setOpen(false)} style={{ background: "none", border: "none", color: "var(--text-muted)" }}>
-          <X size={16} />
+    <div className="agent-panel" role="dialog" aria-label="Ask the agent">
+      <div className="agent-panel-header">
+        <BrandMark />
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 700 }}>Ask the agent</div>
+          <div className="muted" style={{ fontSize: 11.5 }}>
+            {migrationId ? "About this migration" : "Planning, cutover, rollback"}
+          </div>
+        </div>
+        <button className="icon-btn" onClick={() => setOpen(false)} aria-label="Close">
+          <X size={15} />
         </button>
       </div>
       <div className="cb-scrollbar" style={{ flex: 1, overflowY: "auto", padding: 14, display: "flex", flexDirection: "column", gap: 10 }}>
         {turns.length === 0 && (
-          <div style={{ fontSize: 12.5, color: "var(--text-primary)", display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ fontSize: 12.5, lineHeight: 1.55, display: "flex", flexDirection: "column", gap: 12 }}>
             <div>
               Welcome to the Couchbase Onboarding Agent. I help plan and de-risk your migration from MongoDB,
               DynamoDB, Redis, Cassandra, Cosmos DB, or another Couchbase cluster into Couchbase.
             </div>
             <div>
-              <div style={{ fontWeight: 700, marginBottom: 4 }}>Automatically, I:</div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                <div>- Watch throughput and surface bottleneck alerts right here as they happen</div>
-                <div>- Auto-throttle concurrency for source throttling or destination backpressure</div>
-                <div>- Recall similar past incidents from Couchbase-backed memory</div>
-              </div>
+              <div className="stat-label" style={{ marginBottom: 4 }}>Automatically, I</div>
+              <ul style={{ margin: 0, paddingLeft: 18, color: "var(--text-muted)" }}>
+                <li>Watch throughput and surface bottleneck alerts right here as they happen</li>
+                <li>Auto-throttle concurrency for source throttling or destination backpressure</li>
+                <li>Recall similar past incidents from Couchbase-backed memory</li>
+              </ul>
             </div>
             <div>
-              <div style={{ fontWeight: 700, marginBottom: 4 }}>Ask me to:</div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                <div>- Recommend a strategy (one-time load, continuous CDC, or hybrid) for your use case</div>
-                <div>- Explain a validation failure or warning and how to fix it</div>
-                <div>- Walk through cutover, rollback, or falling back to the source</div>
-                <div>- Reason through how your source data will map into Couchbase documents</div>
-              </div>
+              <div className="stat-label" style={{ marginBottom: 4 }}>Ask me to</div>
+              <ul style={{ margin: 0, paddingLeft: 18, color: "var(--text-muted)" }}>
+                <li>Recommend a strategy (one-time load, continuous CDC, or hybrid) for your use case</li>
+                <li>Explain a validation failure or warning and how to fix it</li>
+                <li>Walk through cutover, rollback, or falling back to the source</li>
+                <li>Reason through how your source data will map into Couchbase documents</li>
+              </ul>
             </div>
           </div>
         )}
@@ -138,45 +124,30 @@ export default function AgentPanel() {
           t.role === "alert" ? (
             <div
               key={i}
-              style={{
-                alignSelf: "flex-start", maxWidth: "92%", display: "flex", gap: 8,
-                background: "var(--bg-2)", border: `1px solid ${t.autoRemediated ? "var(--cb-teal)" : "var(--cb-amber)"}`,
-                borderRadius: 10, padding: "8px 11px", fontSize: 12, whiteSpace: "pre-wrap",
-              }}
+              className={`helper-banner${t.autoRemediated ? " helper-banner-success" : ""}`}
+              style={{ alignSelf: "flex-start", maxWidth: "92%", whiteSpace: "pre-wrap" }}
             >
-              {t.autoRemediated ? (
-                <Wrench size={14} color="var(--cb-teal)" style={{ flexShrink: 0, marginTop: 1 }} />
-              ) : (
-                <AlertTriangle size={14} color="var(--cb-amber)" style={{ flexShrink: 0, marginTop: 1 }} />
-              )}
+              {t.autoRemediated ? <Wrench size={14} /> : <AlertTriangle size={14} />}
               <div>{t.content}</div>
             </div>
           ) : (
-            <div
-              key={i}
-              style={{
-                alignSelf: t.role === "user" ? "flex-end" : "flex-start",
-                maxWidth: "85%",
-                background: t.role === "user" ? "var(--cb-red)" : "var(--bg-2)",
-                color: t.role === "user" ? "var(--on-accent)" : "var(--text-primary)",
-                borderRadius: 10, padding: "8px 11px", fontSize: 12.5, whiteSpace: "pre-wrap",
-              }}
-            >
+            <div key={i} className={`agent-bubble ${t.role}`}>
               {t.content}
             </div>
           ),
         )}
-        {sending && <div style={{ fontSize: 12, color: "var(--text-muted)" }}>Thinking...</div>}
+        {sending && <div className="muted">Thinking...</div>}
       </div>
-      <div style={{ padding: 10, borderTop: "1px solid var(--border-subtle)", display: "flex", gap: 8 }}>
+      <div style={{ padding: 10, borderTop: "1px solid var(--border)", display: "flex", gap: 8 }}>
         <input
           value={message}
           onChange={(e) => setMessage(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && send()}
           placeholder="Ask a question..."
+          aria-label="Message"
           style={{ flex: 1 }}
         />
-        <button onClick={send} className="cb-btn cb-btn-primary" style={{ padding: "8px 10px" }} disabled={sending}>
+        <button onClick={send} className="btn btn-primary" style={{ padding: "8px 11px" }} disabled={sending} aria-label="Send">
           <Send size={14} />
         </button>
       </div>

@@ -1,56 +1,59 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
-export type ThemePreference = "light" | "dark" | "system";
-export type ResolvedTheme = "light" | "dark";
+export type Theme = "light" | "dark";
 
+// Keep in sync with public/theme-init.js, which sets data-theme on <html>
+// before React mounts so there's no flash of the wrong theme.
 const STORAGE_KEY = "cb-onboarding-theme";
-const media = () => window.matchMedia?.("(prefers-color-scheme: light)");
 
-function readPreference(): ThemePreference {
+export const DEFAULT_THEME: Theme = "light";
+
+/** The saved choice, if any. Earlier versions could also store "system";
+ * that (or anything else) now falls back to the default. */
+export function getStoredTheme(): Theme | null {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored === "light" || stored === "dark" || stored === "system") return stored;
+    return stored === "light" || stored === "dark" ? stored : null;
   } catch {
-    // storage unavailable (private mode) -- fall back to the system setting
+    return null;
   }
-  return "system";
 }
 
-function resolve(pref: ThemePreference): ResolvedTheme {
-  if (pref !== "system") return pref;
-  return media()?.matches ? "light" : "dark";
+// Light unless someone picked dark with the toggle. The OS setting is
+// deliberately not consulted -- same as the Agent Operations Manager -- so a
+// console that people demo, screenshot and support each other through looks
+// the same on every machine.
+export function getPreferredTheme(): Theme {
+  return getStoredTheme() ?? DEFAULT_THEME;
 }
 
-function apply(theme: ResolvedTheme) {
+export function applyTheme(theme: Theme) {
   document.documentElement.dataset.theme = theme;
 }
 
-/** Theme preference (light / dark / follow the OS), persisted per browser.
- * index.html applies the stored choice before first paint to avoid a flash. */
+function persistTheme(theme: Theme) {
+  try {
+    localStorage.setItem(STORAGE_KEY, theme);
+  } catch {
+    // Best effort: the theme just won't persist across reloads.
+  }
+}
+
 export function useTheme() {
-  const [preference, setPreference] = useState<ThemePreference>(readPreference);
-  const [resolved, setResolved] = useState<ResolvedTheme>(() => resolve(readPreference()));
+  const [theme, setThemeState] = useState<Theme>(() => getPreferredTheme());
 
   useEffect(() => {
-    const next = resolve(preference);
-    setResolved(next);
-    apply(next);
-    try {
-      localStorage.setItem(STORAGE_KEY, preference);
-    } catch {
-      // ignore
-    }
-    if (preference !== "system") return;
-    const mq = media();
-    if (!mq) return;
-    const onChange = () => {
-      const r = resolve("system");
-      setResolved(r);
-      apply(r);
-    };
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
-  }, [preference]);
+    applyTheme(theme);
+  }, [theme]);
 
-  return { preference, resolved, setPreference };
+  const setTheme = useCallback((next: Theme) => {
+    setThemeState(next);
+    persistTheme(next);
+  }, []);
+
+  const toggleTheme = useCallback(() => {
+    setTheme(theme === "dark" ? "light" : "dark");
+  }, [theme, setTheme]);
+
+  return { theme, setTheme, toggleTheme };
 }

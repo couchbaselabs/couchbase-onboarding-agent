@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
-import { AlertTriangle, Wrench } from "lucide-react";
+import { Link, useParams } from "react-router-dom";
+import { AlertTriangle, ArrowLeft, CheckCircle2, Loader2, Wrench, XCircle } from "lucide-react";
 import { api, ApiError } from "@/api/client";
 import type { MigrationRecord } from "@/api/types";
 import { useMigrationSocket } from "@/hooks/useMigrationSocket";
@@ -11,7 +11,7 @@ import SyncPanel from "@/components/migration/SyncPanel";
 import RollbackDialog from "@/components/migration/RollbackDialog";
 import VerificationTable from "@/components/migration/VerificationTable";
 import FallbackPanel from "@/components/migration/FallbackPanel";
-import { phaseLabel, statusColor, SOURCE_TYPE_LABELS, tint } from "@/theme/tokens";
+import { phaseLabel, phaseTone, SOURCE_TYPE_LABELS } from "@/theme/tokens";
 import { formatUtc } from "@/utils/time";
 
 const STREAMING_PHASES = new Set(["replicating", "fallback_syncing"]);
@@ -35,7 +35,14 @@ export default function MigrationDetailPage() {
     live && live.migration_id === id && (!initial || live.updated_at >= initial.updated_at) ? live : initial;
 
   if (!record) {
-    return <div style={{ padding: 32, color: "var(--text-muted)" }}>{actionError ?? "Loading..."}</div>;
+    return actionError ? (
+      <div className="helper-banner helper-banner-danger" role="alert">
+        <XCircle size={15} />
+        <span>{actionError}</span>
+      </div>
+    ) : (
+      <div className="loading-note">Loading...</div>
+    );
   }
 
   async function run(action: () => Promise<MigrationRecord>) {
@@ -59,81 +66,53 @@ export default function MigrationDetailPage() {
   const canFallback = phase === "complete" && !!record.cutover_at;
 
   return (
-    <div style={{ padding: 32, maxWidth: 1100 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20, gap: 12 }}>
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>{plan.name}</h1>
-          <div style={{ fontSize: 12.5, color: "var(--text-secondary)", marginTop: 4 }}>
+    <>
+      <Link to="/" className="back-link">
+        <ArrowLeft size={13} /> Migrations
+      </Link>
+      <div className="page-header">
+        <div style={{ minWidth: 0 }}>
+          <h1 className="page-title">
+            {plan.name}
+            <span className={`badge badge-lg badge-${draining ? "info" : phaseTone(phase)}`}>
+              {draining ? "cutting over" : phaseLabel(phase)}
+            </span>
+          </h1>
+          <p className="page-subtitle">
             {SOURCE_TYPE_LABELS[plan.source.source_type]} ({plan.source.label}) &rarr; {plan.destination.label} /{" "}
             {plan.destination_bucket}
             {record.cutover_at && <> &middot; cut over {formatUtc(record.cutover_at)}</>}
-          </div>
+          </p>
         </div>
-        <span className="cb-badge" style={{ background: tint(statusColor(phase)), color: statusColor(phase), fontSize: 12 }}>
-          {draining ? "cutting over" : phaseLabel(phase)}
-        </span>
-      </div>
-
-      <div className="cb-card" style={{ marginBottom: 20 }}>
-        <TopologyDiagram
-          sourceType={plan.source.source_type}
-          sourceLabel={plan.source.label}
-          containerCount={plan.containers.filter((c) => c.include).length}
-          destLabel={plan.destination.label}
-          isCapella={plan.destination.is_capella}
-          bucket={plan.destination_bucket}
-          bucketCount={record.validation_report?.dest_topology?.buckets.length || 1}
-          destNodes={record.validation_report?.dest_topology?.nodes.map((n) => ({ hostname: n.hostname, services: n.services }))}
-          phase={phase}
-          throughputPerSec={streaming ? stats.mutations_per_sec : stats.throughput_docs_per_sec}
-        />
-      </div>
-
-      {record.error_message && (
-        <div className="cb-card" style={{ marginBottom: 20, borderColor: "var(--cb-red-bright)", color: "var(--cb-red-bright)" }}>
-          {record.error_message}
-        </div>
-      )}
-      {record.rollback_state.last_summary && phase === "rolled_back" && (
-        <div className="cb-card" style={{ marginBottom: 20, borderColor: "var(--cb-green)" }}>{record.rollback_state.last_summary}</div>
-      )}
-      {actionError && (
-        <div className="cb-card" role="alert" style={{ marginBottom: 20, borderColor: "var(--cb-red-bright)", color: "var(--cb-red-bright)" }}>
-          {actionError}
-        </div>
-      )}
-
-      <div className="cb-card" style={{ marginBottom: 20 }}>
-        <div className="cb-section-title">Actions</div>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <div className="header-actions">
           {phase === "approved" && (
-            <button className="cb-btn cb-btn-primary" disabled={busy} onClick={() => run(() => api.startMigration(mid))}>
+            <button className="btn btn-primary" disabled={busy} onClick={() => run(() => api.startMigration(mid))}>
               {continuous ? "Start migration + sync" : "Start migration"}
             </button>
           )}
           {phase === "replicating" && !draining && (
             <>
+              <button className="btn btn-secondary" disabled={busy} onClick={() => run(() => api.stopReplication(mid, false))}>
+                Pause sync
+              </button>
               <button
-                className="cb-btn cb-btn-primary"
+                className="btn btn-primary"
                 disabled={busy}
                 title="Stop application writes to the source first. The remaining changes are applied, counts are verified, then Couchbase becomes the system of record."
                 onClick={() => run(() => api.stopReplication(mid, true))}
               >
                 Cut over
               </button>
-              <button className="cb-btn" disabled={busy} onClick={() => run(() => api.stopReplication(mid, false))}>
-                Pause sync
-              </button>
             </>
           )}
           {canResume && (
-            <button className="cb-btn cb-btn-primary" disabled={busy} onClick={() => run(() => api.resumeMigration(mid))}>
+            <button className="btn btn-primary" disabled={busy} onClick={() => run(() => api.resumeMigration(mid))}>
               Resume from checkpoint
             </button>
           )}
           {canFallback && (
             <button
-              className="cb-btn"
+              className="btn btn-secondary"
               disabled={busy}
               title="Write changes made in Couchbase since cutover back to the source, so applications can move back without losing data."
               onClick={() => run(() => api.startFallback(mid))}
@@ -143,116 +122,164 @@ export default function MigrationDetailPage() {
           )}
           {phase === "fallback_syncing" && (
             <>
+              <button className="btn btn-secondary" disabled={busy} onClick={() => run(() => api.stopFallback(mid, false))}>
+                Stop fallback sync (stay on Couchbase)
+              </button>
               {!confirmFallBack ? (
-                <button className="cb-btn cb-btn-primary" disabled={busy} onClick={() => setConfirmFallBack(true)}>
+                <button className="btn btn-primary" disabled={busy} onClick={() => setConfirmFallBack(true)}>
                   Fall back to source...
                 </button>
               ) : (
-                <button className="cb-btn cb-btn-primary" disabled={busy} onClick={() => run(() => api.stopFallback(mid, true))}>
+                <button className="btn btn-primary btn-wrap" disabled={busy} onClick={() => run(() => api.stopFallback(mid, true))}>
                   Confirm: writes to Couchbase have stopped -- fall back now
                 </button>
               )}
-              <button className="cb-btn" disabled={busy} onClick={() => run(() => api.stopFallback(mid, false))}>
-                Stop fallback sync (stay on Couchbase)
-              </button>
             </>
           )}
           {ROLLBACK_PHASES.has(phase) && (
-            <button className="cb-btn cb-btn-danger" disabled={busy} onClick={() => setShowRollback(true)}>
+            <button className="btn btn-danger-outline" disabled={busy} onClick={() => setShowRollback(true)}>
               Roll back...
             </button>
           )}
         </div>
+      </div>
+
+      <div className="stack">
         {draining && (
-          <div className="cb-muted" style={{ marginTop: 10 }}>
-            Cutover in progress: applying the remaining changes, then verifying counts.
+          <div className="helper-banner helper-banner-neutral" role="status">
+            <Loader2 size={14} className="cb-spin" />
+            <span>Cutover in progress: applying the remaining changes, then verifying counts.</span>
           </div>
         )}
-      </div>
-
-      {continuous && (streaming || phase === "migrating" || sync.stage !== "idle") && phase !== "fallback_syncing" && (
-        <SyncPanel record={record} busy={busy} onReconcile={() => run(() => api.reconcile(mid))} />
-      )}
-
-      <FallbackPanel record={record} />
-
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 20 }}>
-        <StatCard label="Bulk copy: docs" value={stats.docs_migrated.toLocaleString()} sub={stats.docs_total ? `of ~${stats.docs_total.toLocaleString()}` : undefined} />
-        <StatCard label="Failed writes" value={stats.docs_failed.toLocaleString()} />
-        <StatCard label="Throughput" value={`${stats.throughput_docs_per_sec.toFixed(1)}/s`} />
-        <StatCard label="Rollback journal" value={record.rollback_state.journaled_docs.toLocaleString()} sub="pre-images saved" />
-      </div>
-
-      <div style={{ marginBottom: 20 }}>
-        <ThroughputChart value={streaming ? stats.mutations_per_sec : stats.throughput_docs_per_sec} label={streaming ? "Changes/sec" : "Docs/sec"} />
-      </div>
-
-      <VerificationTable record={record} />
-
-      {record.failed_events.length > 0 && (
-        <div className="cb-card" style={{ marginBottom: 20 }}>
-          <div className="cb-section-title">Writes that failed after retries ({record.failed_events.length})</div>
-          <div className="cb-muted" style={{ marginBottom: 8 }}>
-            These didn't block the migration. Reconciliation or re-running the bulk copy repairs them once the cause is fixed.
+        {record.error_message && (
+          <div className="helper-banner helper-banner-danger" role="alert">
+            <XCircle size={15} />
+            <span>{record.error_message}</span>
           </div>
-          <div style={{ overflowX: "auto" }}>
-            <table className="cb-table">
-              <thead>
-                <tr>
-                  <th>Container</th>
-                  <th>Key</th>
-                  <th>Op</th>
-                  <th>Error</th>
-                </tr>
-              </thead>
-              <tbody>
-                {record.failed_events.slice(-10).reverse().map((e, i) => (
-                  <tr key={i}>
-                    <td>{e.container}</td>
-                    <td style={{ fontFamily: "ui-monospace, monospace" }}>{e.key}</td>
-                    <td>{e.op}</td>
-                    <td style={{ color: "var(--text-secondary)" }}>{e.error}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+        )}
+        {record.rollback_state.last_summary && phase === "rolled_back" && (
+          <div className="helper-banner helper-banner-success">
+            <CheckCircle2 size={15} />
+            <span>{record.rollback_state.last_summary}</span>
           </div>
+        )}
+        {actionError && (
+          <div className="helper-banner helper-banner-danger" role="alert">
+            <XCircle size={15} />
+            <span>{actionError}</span>
+          </div>
+        )}
+
+        <div className="stat-grid" style={{ marginBottom: 0 }}>
+          <StatCard
+            label="Bulk copy: docs"
+            value={stats.docs_migrated.toLocaleString()}
+            sub={stats.docs_total ? `of ~${stats.docs_total.toLocaleString()}` : "documents written"}
+          />
+          <StatCard
+            label="Failed writes"
+            value={stats.docs_failed.toLocaleString()}
+            sub={stats.docs_failed ? "retried, then set aside" : "none"}
+            valueColor={stats.docs_failed ? "var(--red-dim)" : undefined}
+          />
+          <StatCard
+            label={streaming ? "Changes/sec" : "Throughput"}
+            value={`${(streaming ? stats.mutations_per_sec : stats.throughput_docs_per_sec).toFixed(1)}/s`}
+            sub={streaming ? "continuous sync" : "bulk copy"}
+          />
+          <StatCard label="Rollback journal" value={record.rollback_state.journaled_docs.toLocaleString()} sub="pre-images saved" />
         </div>
-      )}
 
-      {record.bottleneck_findings.length > 0 && (
-        <div className="cb-card" style={{ marginBottom: 20 }}>
-          <div className="cb-section-title">Bottleneck findings</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {record.bottleneck_findings.slice(-5).reverse().map((f) => (
-              <div key={f.finding_id} style={{ display: "flex", gap: 8, fontSize: 12.5 }}>
-                {f.auto_remediated ? (
-                  <Wrench size={14} color="var(--cb-teal)" style={{ flexShrink: 0, marginTop: 1 }} />
-                ) : (
-                  <AlertTriangle size={14} color="var(--cb-amber)" style={{ flexShrink: 0, marginTop: 1 }} />
-                )}
-                <div>
-                  <div>{f.message}</div>
-                  <div style={{ color: "var(--text-muted)" }}>{f.suggestion}</div>
+        <div className="card">
+          <h3 className="card-title">Data flow</h3>
+          <TopologyDiagram
+            sourceType={plan.source.source_type}
+            sourceLabel={plan.source.label}
+            containerCount={plan.containers.filter((c) => c.include).length}
+            destLabel={plan.destination.label}
+            isCapella={plan.destination.is_capella}
+            bucket={plan.destination_bucket}
+            bucketCount={record.validation_report?.dest_topology?.buckets.length || 1}
+            destNodes={record.validation_report?.dest_topology?.nodes.map((n) => ({ hostname: n.hostname, services: n.services }))}
+            phase={phase}
+            throughputPerSec={streaming ? stats.mutations_per_sec : stats.throughput_docs_per_sec}
+          />
+        </div>
+
+        {continuous && (streaming || phase === "migrating" || sync.stage !== "idle") && phase !== "fallback_syncing" && (
+          <SyncPanel record={record} busy={busy} onReconcile={() => run(() => api.reconcile(mid))} />
+        )}
+
+        <FallbackPanel record={record} />
+
+        <ThroughputChart value={streaming ? stats.mutations_per_sec : stats.throughput_docs_per_sec} label={streaming ? "Changes/sec" : "Docs/sec"} />
+
+        <VerificationTable record={record} />
+
+        {record.failed_events.length > 0 && (
+          <div className="card">
+            <div className="card-title-row">
+              <h3 className="card-title">Writes that failed after retries</h3>
+              <span className="badge badge-danger">{record.failed_events.length}</span>
+            </div>
+            <div className="muted" style={{ marginBottom: 10 }}>
+              These didn't block the migration. Reconciliation or re-running the bulk copy repairs them once the cause is fixed.
+            </div>
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Container</th>
+                    <th>Key</th>
+                    <th>Op</th>
+                    <th>Error</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {record.failed_events.slice(-10).reverse().map((e, i) => (
+                    <tr key={i}>
+                      <td>{e.container}</td>
+                      <td className="cell-mono">{e.key}</td>
+                      <td>
+                        <span className="badge badge-neutral">{e.op}</span>
+                      </td>
+                      <td className="cell-muted">{e.error}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {record.bottleneck_findings.length > 0 && (
+          <div className="card">
+            <h3 className="card-title">Bottleneck findings</h3>
+            <div className="stack" style={{ gap: 10 }}>
+              {record.bottleneck_findings.slice(-5).reverse().map((f) => (
+                <div key={f.finding_id} className={`finding-card ${f.auto_remediated ? "sev-pass" : "sev-warning"}`}>
+                  {f.auto_remediated ? (
+                    <Wrench size={15} color="var(--teal)" style={{ flexShrink: 0, marginTop: 1 }} aria-label="Auto-remediated" />
+                  ) : (
+                    <AlertTriangle size={15} color="var(--amber)" style={{ flexShrink: 0, marginTop: 1 }} aria-label="Needs attention" />
+                  )}
+                  <div>
+                    <div className="finding-title">{f.message}</div>
+                    <p className="finding-summary">{f.suggestion}</p>
+                  </div>
                 </div>
-              </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="card">
+          <h3 className="card-title">Log</h3>
+          <div className="console cb-scrollbar">
+            {record.log_tail.slice().reverse().map((line, i) => (
+              <div key={i}>{line}</div>
             ))}
           </div>
-        </div>
-      )}
-
-      <div className="cb-card">
-        <div className="cb-section-title">Log</div>
-        <div
-          className="cb-scrollbar"
-          style={{
-            maxHeight: 260, overflowY: "auto", fontFamily: "ui-monospace, monospace", fontSize: 11.5,
-            color: "var(--text-secondary)", display: "flex", flexDirection: "column", gap: 3,
-          }}
-        >
-          {record.log_tail.slice().reverse().map((line, i) => (
-            <div key={i}>{line}</div>
-          ))}
         </div>
       </div>
 
@@ -266,6 +293,6 @@ export default function MigrationDetailPage() {
           }}
         />
       )}
-    </div>
+    </>
   );
 }

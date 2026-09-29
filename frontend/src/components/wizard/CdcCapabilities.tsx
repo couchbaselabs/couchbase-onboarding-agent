@@ -29,24 +29,29 @@ export default function CdcCapabilities({ topology }: { topology: SourceTopology
     },
   ];
   return (
-    <div className="cb-card" style={{ padding: 14 }}>
-      <div className="cb-section-title">Continuous sync on this source</div>
+    <div className="card">
+      <div className="card-title-row">
+        <h3 className="card-title">Continuous sync on this source</h3>
+        <span className={`badge ${topology.supports_cdc ? "badge-success" : "badge-neutral"}`}>
+          {topology.supports_cdc ? "available" : "not available"}
+        </span>
+      </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10 }}>
         {rows.map((r) => (
-          <div key={r.label} style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 12.5 }}>
+          <div key={r.label} style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 13 }}>
             {r.ok ? (
-              <CheckCircle2 size={15} color="var(--cb-green)" style={{ flexShrink: 0, marginTop: 1 }} />
+              <CheckCircle2 size={15} color="var(--green)" style={{ flexShrink: 0, marginTop: 1 }} />
             ) : (
-              <MinusCircle size={15} color="var(--text-muted)" style={{ flexShrink: 0, marginTop: 1 }} />
+              <MinusCircle size={15} color="var(--text-faint)" style={{ flexShrink: 0, marginTop: 1 }} />
             )}
             <div>
               <div style={{ fontWeight: 600 }}>{r.label}</div>
-              <div className="cb-muted">{r.detail}</div>
+              <div className="muted">{r.detail}</div>
             </div>
           </div>
         ))}
       </div>
-      {topology.cdc_notes && <div className="cb-muted" style={{ marginTop: 10 }}>{topology.cdc_notes}</div>}
+      {topology.cdc_notes && <div className="muted" style={{ marginTop: 10 }}>{topology.cdc_notes}</div>}
     </div>
   );
 }

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { KeyRound } from "lucide-react";
 import { api, AUTH_REQUIRED_EVENT, getToken, setToken } from "@/api/client";
+import { BrandMark } from "@/assets/CouchbaseLogo";
 
 /** Asks for the API token when the backend requires one (API_AUTH_TOKEN). The
  * token lives in sessionStorage for this tab only. */
@@ -41,18 +41,31 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
   if (!checked) return null;
   if (!needsToken) return <>{children}</>;
   return (
-    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
-      <form className="cb-card" onSubmit={submit} style={{ width: "min(420px, 100%)", display: "flex", flexDirection: "column", gap: 12 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 700, fontSize: 15 }}>
-          <KeyRound size={18} /> API token required
+    <div className="login-shell">
+      <form className="login-card" onSubmit={submit}>
+        <div className="login-brand">
+          <BrandMark />
+          <div className="login-brand-name">
+            Couchbase
+            <br />
+            Onboarding Agent
+          </div>
         </div>
-        <div style={{ fontSize: 12.5, color: "var(--text-secondary)" }}>
+        <h1 className="login-title">API token required</h1>
+        <p className="login-subtitle">
           This deployment protects its API with a token (the backend's <code>API_AUTH_TOKEN</code>). Paste it to
           continue; it's kept only for this browser tab.
+        </p>
+        <div className="field" style={{ marginBottom: 14 }}>
+          <label htmlFor="api-token">API token</label>
+          <input id="api-token" type="password" autoFocus value={value} onChange={(e) => setValue(e.target.value)} />
         </div>
-        <input type="password" autoFocus value={value} onChange={(e) => setValue(e.target.value)} aria-label="API token" />
-        {error && <div style={{ color: "var(--cb-red-bright)", fontSize: 12.5 }}>{error}</div>}
-        <button className="cb-btn cb-btn-primary" type="submit" disabled={!value.trim()}>
+        {error && (
+          <div className="helper-banner helper-banner-danger" role="alert" style={{ marginBottom: 14 }}>
+            {error}
+          </div>
+        )}
+        <button className="btn btn-primary login-submit" type="submit" disabled={!value.trim()}>
           Continue
         </button>
       </form>

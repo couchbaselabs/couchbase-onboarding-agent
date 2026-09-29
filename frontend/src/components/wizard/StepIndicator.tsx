@@ -4,34 +4,19 @@ const STEPS = ["Source", "Destination & Mode", "Validate", "Review & Approve"];
 
 export default function StepIndicator({ step }: { step: number }) {
   return (
-    <div style={{ display: "flex", gap: 0, marginBottom: 28 }}>
+    <ol className="steps" aria-label="Wizard steps" style={{ listStyle: "none", padding: 0 }}>
       {STEPS.map((label, i) => {
         const state = i < step ? "done" : i === step ? "active" : "pending";
         return (
-          <div key={label} style={{ display: "flex", alignItems: "center", flex: i < STEPS.length - 1 ? 1 : "0 0 auto" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <div
-                style={{
-                  width: 26, height: 26, borderRadius: "50%",
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  fontSize: 12, fontWeight: 700,
-                  background: state === "pending" ? "var(--bg-2)" : "var(--cb-red)",
-                  color: state === "pending" ? "var(--text-muted)" : "var(--on-accent)",
-                  border: state === "active" ? "2px solid var(--cb-red-bright)" : "none",
-                }}
-              >
-                {state === "done" ? <Check size={14} /> : i + 1}
-              </div>
-              <span style={{ fontSize: 12.5, fontWeight: 600, color: state === "pending" ? "var(--text-muted)" : "var(--text-primary)" }}>
-                {label}
-              </span>
+          <li key={label} style={{ display: "contents" }}>
+            <div className="step" data-state={state} aria-current={state === "active" ? "step" : undefined}>
+              <span className="step-num">{state === "done" ? <Check size={14} strokeWidth={3} /> : i + 1}</span>
+              {label}
             </div>
-            {i < STEPS.length - 1 && (
-              <div style={{ flex: 1, height: 1, margin: "0 14px", background: "var(--border-subtle)" }} />
-            )}
-          </div>
+            {i < STEPS.length - 1 && <div className="step-line" aria-hidden="true" />}
+          </li>
         );
       })}
-    </div>
+    </ol>
   );
 }

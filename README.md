@@ -45,7 +45,8 @@ that keeps the source current after cutover so applications can move back withou
 - **Assistant** (Qwen via an Ollama-compatible API, running locally): answers questions grounded in the
   migration's live state and recalls similar past events from a Couchbase-backed vector memory. Source
   credentials, samples and data never leave your deployment.
-- **Light and dark mode**, following the OS setting by default (Appearance switch in the sidebar).
+- **Light and dark mode** with the same look as the Couchbase Agent Operations Manager: light by default,
+  dark from the toggle next to the logo (remembered per browser).
 
 ## Supported sources
 

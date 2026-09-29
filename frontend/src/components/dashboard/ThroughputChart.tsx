@@ -25,9 +25,12 @@ export default function ThroughputChart({ value, label }: { value: number; label
   const latest = history[history.length - 1];
 
   return (
-    <div className="cb-card" style={{ padding: 16 }}>
-      <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 700, textTransform: "uppercase", marginBottom: 8 }}>
-        {label}
+    <div className="card">
+      <div className="card-title-row" style={{ marginBottom: 4 }}>
+        <h3 className="card-title">{label} (live)</h3>
+        <span className="cell-muted" style={{ fontSize: 12 }}>
+          last {Math.max(history.length, 1)} sample{history.length === 1 ? "" : "s"}
+        </span>
       </div>
       <ResponsiveContainer width="100%" height={140}>
         <AreaChart data={history} margin={{ top: 28, right: 12, left: 0, bottom: 0 }}>
@@ -47,7 +50,7 @@ export default function ThroughputChart({ value, label }: { value: number; label
             tickFormatter={(v: number) => (v >= 1000 ? `${(v / 1000).toFixed(1)}k` : v.toFixed(0))}
           />
           <Tooltip
-            contentStyle={{ background: colors.bg2, border: `1px solid ${colors.borderSubtle}`, borderRadius: 8, fontSize: 12 }}
+            contentStyle={{ background: colors.bg1, border: `1px solid ${colors.borderSubtle}`, borderRadius: 6, fontSize: 12, color: colors.textPrimary }}
             labelFormatter={() => ""}
             formatter={(v: number) => [v.toFixed(1), label]}
             cursor={{ stroke: colors.borderStrong, strokeWidth: 1 }}
@@ -100,7 +103,7 @@ function LiveValueLabel(props: {
 
   return (
     <g>
-      <rect x={x} y={y} width={boxWidth} height={boxHeight} rx={6} fill={colors.bg2} stroke={colors.borderSubtle} />
+      <rect x={x} y={y} width={boxWidth} height={boxHeight} rx={5} fill={colors.bg1} stroke={colors.borderSubtle} />
       <text x={x + boxWidth / 2} y={y + boxHeight / 2 + 4} textAnchor="middle" fontSize={11} fontWeight={700} fill={colors.cbTeal}>
         {text}
       </text>

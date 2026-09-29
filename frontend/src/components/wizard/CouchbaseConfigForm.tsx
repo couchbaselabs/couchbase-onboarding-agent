@@ -2,11 +2,12 @@ import type { CouchbaseConnectionConfig } from "@/api/types";
 import TlsFields from "./TlsFields";
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  // Wrapping label: the control inside is labelled without needing ids.
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-      <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)" }}>{label}</label>
+    <label className="field">
+      <span className="field-label">{label}</span>
       {children}
-    </div>
+    </label>
   );
 }
 
@@ -18,7 +19,7 @@ export default function CouchbaseConfigForm({
   onChange: (patch: Partial<CouchbaseConnectionConfig>) => void;
 }) {
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+    <div className="form-grid">
       <Field label="Friendly name">
         <input value={value.label} onChange={(e) => onChange({ label: e.target.value })} />
       </Field>
@@ -29,7 +30,7 @@ export default function CouchbaseConfigForm({
           placeholder="couchbases://cb.xxxxx.cloud.couchbase.com"
         />
       </Field>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+      <div className="two-col">
         <Field label="Username">
           <input value={value.username} onChange={(e) => onChange({ username: e.target.value })} />
         </Field>
@@ -37,7 +38,7 @@ export default function CouchbaseConfigForm({
           <input type="password" value={value.password} onChange={(e) => onChange({ password: e.target.value })} />
         </Field>
       </div>
-      <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5 }}>
+      <label className="checkbox-row">
         <input
           type="checkbox"
           checked={!!value.is_capella}
@@ -48,7 +49,7 @@ export default function CouchbaseConfigForm({
         This endpoint is a Couchbase Capella cluster
       </label>
       {value.is_capella && (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <div className="two-col">
           <Field label="Capella project ID (optional)">
             <input
               value={value.capella_project_id || ""}
@@ -64,7 +65,7 @@ export default function CouchbaseConfigForm({
         </div>
       )}
       {!value.is_capella && (
-        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5 }}>
+        <label className="checkbox-row">
           <input type="checkbox" checked={!!value.use_tls} onChange={(e) => onChange({ use_tls: e.target.checked })} />
           Use TLS
         </label>
@@ -72,7 +73,7 @@ export default function CouchbaseConfigForm({
       {(value.is_capella || value.use_tls) && (
         <TlsFields caPem={value.ca_cert_pem} skipVerify={value.tls_skip_verify} onChange={onChange} />
       )}
-      <div style={{ fontSize: 11.5, color: "var(--text-muted)" }}>
+      <div className="field-hint">
         Allow-list this agent's IP address on the destination cluster before testing the connection.
         Set <code>CAPELLA_API_TOKEN</code>/<code>CAPELLA_ORG_ID</code> on the backend plus the project/cluster
         ID above if you want the destination bucket auto-provisioned.

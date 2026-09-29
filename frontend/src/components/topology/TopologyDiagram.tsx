@@ -1,4 +1,4 @@
-import { Workflow } from "lucide-react";
+import { BrandMark } from "@/assets/CouchbaseLogo";
 import { colors, SOURCE_TYPE_LABELS, tint } from "@/theme/tokens";
 import type { MigrationPhase, SourceType } from "@/api/types";
 
@@ -68,7 +68,7 @@ export default function TopologyDiagram({
           {throughputPerSec != null ? `${throughputPerSec.toFixed(1)}/s` : "0.0/s"}
         </div>
         <div className="topo-circle" style={{ borderColor: ringColor, boxShadow: flowing ? `0 0 14px ${tint(ringColor, 35)}` : undefined }}>
-          <Workflow size={26} color={colors.cbRed} strokeWidth={2} />
+          <BrandMark title="Couchbase Onboarding Agent" />
         </div>
         <div className="topo-agent-label">
           ONBOARDING
