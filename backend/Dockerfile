@@ -16,7 +16,7 @@
 # core/couchbase_native.py sets LD_LIBRARY_PATH on that one subprocess's own
 # environment instead, leaving every other process (apt, pip, python, uvicorn)
 # to resolve libstdc++ and friends from the base image as normal.
-FROM couchbase:enterprise-7.6.2 AS cbtools
+FROM couchbase:enterprise-8.0.3 AS cbtools
 
 FROM python:3.11-slim AS base
 
