@@ -387,6 +387,5 @@ else needs to change.
 
 ## Contributing and license
 
-Contributions are welcome -- see [CONTRIBUTING.md](CONTRIBUTING.md) and the
-[Code of Conduct](CODE_OF_CONDUCT.md). Released under the [MIT License](LICENSE); third-party components are
+Released under the [MIT License](LICENSE); third-party components are
 listed in [NOTICE](NOTICE).
