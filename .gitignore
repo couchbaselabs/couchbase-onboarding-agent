@@ -1,0 +1,44 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Node / frontend
+node_modules/
+frontend/dist/
+*.tsbuildinfo
+
+# Local config and secrets -- never commit these
+.env
+.env.*
+!env.example
+*.pem
+*.key
+*.crt
+!certs/.gitkeep
+!backend/certs/.gitkeep
+!frontend/certs/.gitkeep
+!qwen-service/certs/.gitkeep
+
+# Local runtime state
+/data/
+*.sqlite
+*.sqlite-journal
+
+# Helm
+deploy/helm/*/charts/
+deploy/helm/*.tgz
