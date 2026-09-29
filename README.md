@@ -11,9 +11,6 @@ that keeps the source current after cutover so applications can move back withou
 
 <img width="1470" height="811" alt="Couchbase Onboarding Agent dashboard" src="https://github.com/user-attachments/assets/917b19ef-0db2-44f5-9dae-6d6c764b1027" />
 
-> **Project status:** a Couchbase Labs project, provided as-is under the [MIT License](LICENSE). It is not
-> an officially supported Couchbase product. Try it against non-production copies of your data first.
-
 - [What it does](#what-it-does)
 - [Supported sources](#supported-sources)
 - [Quick start (Docker Compose)](#quick-start-docker-compose)
