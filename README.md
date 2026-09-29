@@ -382,5 +382,4 @@ else needs to change.
 
 ## Contributing and license
 
-Released under the [MIT License](LICENSE); third-party components are
-listed in [NOTICE](NOTICE).
+Released under the [MIT License](LICENSE)
