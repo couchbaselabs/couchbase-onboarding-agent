@@ -11,9 +11,6 @@ that keeps the source current after cutover so applications can move back withou
 
 <img width="1470" height="811" alt="Couchbase Onboarding Agent dashboard" src="https://github.com/user-attachments/assets/917b19ef-0db2-44f5-9dae-6d6c764b1027" />
 
-> **Project status:** a Couchbase Labs project, provided as-is under the [MIT License](LICENSE). It is not
-> an officially supported Couchbase product. Try it against non-production copies of your data first.
-
 - [What it does](#what-it-does)
 - [Supported sources](#supported-sources)
 - [Quick start (Docker Compose)](#quick-start-docker-compose)
@@ -383,13 +380,6 @@ Streams and `fakeredis` for Redis; no live databases are needed. CI runs lint, t
 The engine, validator, loader, reconciliation, rollback and fallback work against the interface, so nothing
 else needs to change.
 
-## Demo videos
-
-- [Couchbase Enterprise Edition on EC2 to Capella with XDCR (phased migration)](https://erikhinderer.github.io/couchbase-onboarding-agent/migration_video.html)
-- [MongoDB Atlas to Couchbase Capella](https://erikhinderer.github.io/couchbase-onboarding-agent/mongodb-atlas_migration-to_couchbase-capella.html)
-
 ## Contributing and license
 
-Contributions are welcome -- see [CONTRIBUTING.md](CONTRIBUTING.md) and the
-[Code of Conduct](CODE_OF_CONDUCT.md). Released under the [MIT License](LICENSE); third-party components are
-listed in [NOTICE](NOTICE).
+Released under the [MIT License](LICENSE)
