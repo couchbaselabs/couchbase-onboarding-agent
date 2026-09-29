@@ -380,11 +380,6 @@ Streams and `fakeredis` for Redis; no live databases are needed. CI runs lint, t
 The engine, validator, loader, reconciliation, rollback and fallback work against the interface, so nothing
 else needs to change.
 
-## Demo videos
-
-- [Couchbase Enterprise Edition on EC2 to Capella with XDCR (phased migration)](https://erikhinderer.github.io/couchbase-onboarding-agent/migration_video.html)
-- [MongoDB Atlas to Couchbase Capella](https://erikhinderer.github.io/couchbase-onboarding-agent/mongodb-atlas_migration-to_couchbase-capella.html)
-
 ## Contributing and license
 
 Released under the [MIT License](LICENSE); third-party components are
