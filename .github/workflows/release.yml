@@ -53,7 +53,7 @@ jobs:
     needs: images
     steps:
       - uses: actions/checkout@v4
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
       - name: Package and push the chart to GHCR (OCI)
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
