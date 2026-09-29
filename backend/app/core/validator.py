@@ -402,11 +402,13 @@ class MigrationValidator:
             SourceType.COUCHBASE, SourceType.COUCHBASE_ENTERPRISE, SourceType.COUCHBASE_CAPELLA,
         )
         uses_bulk = self.strategy in (MigrationStrategy.FULL_LOAD, MigrationStrategy.FULL_LOAD_AND_CDC)
-        if is_couchbase and uses_bulk:
+        uses_xdcr = self.source_config.source_type == SourceType.COUCHBASE_ENTERPRISE
+        if is_couchbase and (uses_bulk or uses_xdcr):
+            tool = "cbbackupmgr" if not uses_xdcr else ("cbbackupmgr and XDCR" if uses_bulk else "XDCR")
             message = (
-                f"{len(shared)} target collection(s) already exist ({', '.join(shared[:5])}). cbbackupmgr "
-                "restores into them without a migration tag, so rollback can't separate restored documents "
-                "from what was already there. Use new, empty collections if you need a clean rollback."
+                f"{len(shared)} target collection(s) already exist ({', '.join(shared[:5])}). {tool} "
+                "writes into them without a migration tag or journal, so rollback can't separate those "
+                "documents from what was already there. Use new, empty collections if you need a clean rollback."
             )
             passed = False
         elif self.journal_overwrites:

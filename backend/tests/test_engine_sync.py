@@ -218,3 +218,23 @@ async def test_resume_rules():
     assert engine.resume_blocker(record) is None
     record.cutover_at = datetime.utcnow()
     assert engine.resume_blocker(record) is not None
+
+
+async def test_rollback_during_bulk_copy_keeps_rollback_phase(wired):
+    source, state = wired
+    for i in range(20):
+        source.write("items", f"k{i}", {"v": i})
+    gate = asyncio.Event()
+
+    def slow():
+        # Let the rollback start while the bulk copy is mid-way.
+        gate.set()
+
+    source.on_extract_batch = slow
+    record = make_record(MigrationStrategy.FULL_LOAD_AND_CDC)
+    engine = await start(record)
+    await asyncio.wait_for(gate.wait(), 5)
+    await engine.rollback(record, RollbackRequest(migration_id=record.migration_id))
+    await asyncio.sleep(0.2)
+    assert record.phase == MigrationPhase.ROLLED_BACK
+    assert not [k for k in state["loader"].docs if k[0] == ITEMS]

@@ -243,6 +243,16 @@ class MigrationEngine:
     async def _fresh(self, record: MigrationRecord) -> MigrationRecord | None:
         return await self.store.get(record.migration_id)
 
+    @staticmethod
+    def _taken_over(record: MigrationRecord) -> bool:
+        """True once a rollback (or a pause/cutover from another request) has
+        claimed the migration, so a running bulk copy / sync must not move the
+        phase forward again."""
+        return record.phase in (
+            MigrationPhase.ROLLING_BACK, MigrationPhase.ROLLED_BACK, MigrationPhase.STOPPED,
+            MigrationPhase.COMPLETE, MigrationPhase.CANCELLED,
+        )
+
     # -- validation / approval -----------------------------------------------
 
     async def validate(self, record: MigrationRecord) -> MigrationRecord:
@@ -370,6 +380,8 @@ class MigrationEngine:
                 self._add_owned(record, await loader.ensure_collections(containers))
                 await self._ensure_indexes(record, loader, containers)
 
+            if self._taken_over(record):
+                return record
             if continuous and wants_bulk and record.sync.capture_started_at is None:
                 record.sync.stage = SyncStage.CAPTURING
                 self._log(record, "Recording the source's current change position before the bulk copy starts...")
@@ -381,6 +393,8 @@ class MigrationEngine:
                 await self._emit(record)
 
             if wants_bulk:
+                if self._taken_over(record):
+                    return record
                 if continuous:
                     record.sync.stage = SyncStage.BULK_COPY
                 record.sync.bulk_copy_started_at = utcnow()
@@ -398,6 +412,8 @@ class MigrationEngine:
                 record.sync.bulk_copy_finished_at = utcnow()
                 await self._emit(record)
 
+            if self._taken_over(record):
+                return record
             if continuous:
                 return await self._sync_loop(record, holder, loader, containers)
 
@@ -410,6 +426,10 @@ class MigrationEngine:
             await self._emit(record)
             return record
         except Exception as exc:  # noqa: BLE001
+            if record.phase in (MigrationPhase.ROLLING_BACK, MigrationPhase.ROLLED_BACK):
+                # A rollback interrupted this run; it owns the phase from here.
+                self._log(record, f"Bulk copy / sync stopped for rollback ({exc}).")
+                return record
             record.phase = MigrationPhase.FAILED
             record.stats.replication_active = False
             record.error_message = str(exc)
@@ -458,6 +478,8 @@ class MigrationEngine:
     async def _run_full_load(
         self, record: MigrationRecord, connector: SourceConnector, loader: CouchbaseLoader, containers: list[str],
     ) -> None:
+        if self._taken_over(record):
+            raise RuntimeError(f"bulk copy not started (phase is {record.phase.value})")
         record.phase = MigrationPhase.MIGRATING
         self._log(record, f"Starting bulk copy of {len(containers)} container(s)...")
         await self._emit(record)
@@ -556,6 +578,8 @@ class MigrationEngine:
         containers: list[str],
     ) -> MigrationRecord:
         plan = record.plan
+        if self._taken_over(record):
+            return record
         record.phase = MigrationPhase.REPLICATING
         record.stats.replication_active = True
         record.sync.cdc_method = holder["connector"].capabilities.method
@@ -990,9 +1014,11 @@ class MigrationEngine:
                 steps.append(f"Drop the {len(owned)} collection(s) this migration created: {_short_list(sorted(owned))}.")
             elif native:
                 warnings.append("Data copied into collections this migration created stays unless you drop them.")
-        if native and _has_bulk_copy(record) and shared:
+        if native and (_has_bulk_copy(record) or uses_xdcr(record)) and shared:
+            tool = "cbbackupmgr and XDCR" if uses_xdcr(record) and _has_bulk_copy(record) else (
+                "XDCR" if uses_xdcr(record) else "cbbackupmgr")
             warnings.append(
-                f"cbbackupmgr restored documents into {len(shared)} collection(s) that already existed "
+                f"{tool} wrote documents into {len(shared)} collection(s) that already existed "
                 f"({_short_list(shared)}). Those writes aren't journaled and can't be told apart from what was "
                 "there before, so they stay."
             )
@@ -1326,6 +1352,8 @@ class MigrationEngine:
             finally:
                 capture_client.close()
 
+            if self._taken_over(record):
+                return record
             is_continuous = record.plan.strategy in CONTINUOUS_STRATEGIES
             if is_continuous:
                 await self._start_xdcr(record, source, dest, source_bucket, dest_bucket)
