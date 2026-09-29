@@ -867,6 +867,22 @@ class MigrationEngine:
                 dest_client.close()
                 await connector.close()
         if uses_xdcr(record):
+            # Only reattach to a replication that still exists; re-creating one on
+            # the source cluster is left to an explicit Resume.
+            repl_id = record.checkpoint.get("_xdcr_replication_id")
+            alive = bool(repl_id) and bool(
+                await asyncio.to_thread(XdcrManager(record.plan.source).get_progress, repl_id)
+            )
+            if not alive:
+                record.phase = MigrationPhase.FAILED
+                record.stats.replication_active = False
+                record.error_message = (
+                    "The backend restarted and the XDCR replication no longer exists on the source cluster. "
+                    "Use Resume to create it again."
+                )
+                self._log(record, record.error_message)
+                await self._emit(record)
+                return record
             return await self._resume_xdcr(record)
         self._log(record, f"Backend restarted while this migration was {phase.value}; resuming from the last checkpoint.")
         await self._emit(record)

@@ -64,13 +64,14 @@ COPY app ./app
 COPY entrypoint.sh .
 RUN chmod +x entrypoint.sh
 
-# Run as an unprivileged user. The /data directories are created here so named
-# Docker volumes inherit their ownership; on Kubernetes the chart sets fsGroup.
+# The app runs as an unprivileged user (uid 10001). The container starts as
+# root only so entrypoint.sh can fix ownership of volumes created by older,
+# root-running versions; it then drops to uid 10001 before starting the app.
+# On Kubernetes the chart runs the pod as 10001 directly (with fsGroup).
 RUN groupadd --system --gid 10001 app && \
     useradd --system --uid 10001 --gid app --home-dir /app --no-create-home app && \
     mkdir -p /data/state /data/scratch /data/cbbackupmgr-archives && \
     chown -R app:app /data
-USER 10001
 
 ENV PYTHONUNBUFFERED=1
 

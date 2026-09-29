@@ -26,11 +26,11 @@ services:
     volumes:
       - couchbase_memory_data:/opt/couchbase/var
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8091/pools"]
+      test: ["CMD", "curl", "-sf", "-o", "/dev/null", "http://127.0.0.1:8091/pools"]
       interval: 10s
       timeout: 10s
       retries: 30
-      start_period: 30s
+      start_period: 60s
     networks: [coa-net]
 
   # One-shot bootstrap of the memory bucket/scope/collection/indexes. Retries
@@ -93,11 +93,16 @@ services:
       - cbbackupmgr_archives:/data/cbbackupmgr-archives
     ports:
       - "127.0.0.1:8000:8000"
+    # Start as soon as the memory store and the LLM containers are up, without
+    # waiting for them to be healthy: migrations don't need either, and the UI
+    # shows the assistant as "waiting" until the model is ready. (Gating on
+    # health kept the API and UI down for the whole first-boot model download,
+    # and indefinitely if the memory node never became healthy.)
     depends_on:
       couchbase-memory:
-        condition: service_healthy
+        condition: service_started
       qwen-service:
-        condition: service_healthy
+        condition: service_started
     networks: [coa-net]
 
   # -- UI (nginx: static files + /api and /ws proxied to the backend) ---------

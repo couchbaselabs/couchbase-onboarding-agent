@@ -238,3 +238,26 @@ async def test_rollback_during_bulk_copy_keeps_rollback_phase(wired):
     await asyncio.sleep(0.2)
     assert record.phase == MigrationPhase.ROLLED_BACK
     assert not [k for k in state["loader"].docs if k[0] == ITEMS]
+
+
+async def test_startup_does_not_resume_records_from_older_versions(monkeypatch):
+    from app import main as app_main
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "auto_resume_on_startup", True)
+    spawned: list[str] = []
+    monkeypatch.setattr(app_main.runner, "spawn", lambda mid, kind, coro: (coro.close(), spawned.append(kind)))
+
+    old = make_record(MigrationStrategy.FULL_LOAD_AND_CDC)
+    old.phase = MigrationPhase.REPLICATING          # left "running" by a pre-1.1 backend
+    new = make_record(MigrationStrategy.FULL_LOAD_AND_CDC)
+    new.phase = MigrationPhase.REPLICATING
+    new.rollback_state.captured = True
+    new.sync.stage = SyncStage.STREAMING
+    for r in (old, new):
+        await MigrationStore.instance().save(r)
+
+    await app_main._recover_interrupted_migrations()
+    assert spawned == ["run"]
+    reloaded = await MigrationStore.instance().get(old.migration_id)
+    assert reloaded.phase == MigrationPhase.FAILED and "Resume" in reloaded.error_message

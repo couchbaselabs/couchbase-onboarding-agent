@@ -13,7 +13,7 @@ from app.core import runner
 from app.core.connectors.registry import get_connector
 from app.core.migration_engine import MigrationEngine, uses_xdcr
 from app.core.store import MigrationStore
-from app.models.enums import CONTINUOUS_STRATEGIES, COUCHBASE_SOURCE_TYPES, MigrationPhase, SourceType
+from app.models.enums import CONTINUOUS_STRATEGIES, COUCHBASE_SOURCE_TYPES, MigrationPhase, SourceType, SyncStage
 from app.models.schemas import SourceConnectionConfig
 from app.websocket.progress import broadcast_progress
 from app.websocket.progress import router as ws_router
@@ -137,7 +137,13 @@ async def _recover_interrupted_migrations() -> None:
             runner.spawn(mid, "fallback", engine.run_fallback(record, fresh=False))
             continue
 
-        resumable = phase in (MigrationPhase.MIGRATING, MigrationPhase.REPLICATING, MigrationPhase.VERIFYING) and (
+        # Only resume what this version started (it has checkpoint and rollback
+        # state). A record left "running" by an older version is marked failed
+        # instead, so an upgrade never silently reconnects to old clusters.
+        started_by_this_version = record.rollback_state.captured or record.sync.stage != SyncStage.IDLE
+        resumable = started_by_this_version and phase in (
+            MigrationPhase.MIGRATING, MigrationPhase.REPLICATING, MigrationPhase.VERIFYING,
+        ) and (
             record.plan.strategy in CONTINUOUS_STRATEGIES
             or record.plan.source.source_type not in COUCHBASE_SOURCE_TYPES
             or phase == MigrationPhase.VERIFYING
@@ -161,8 +167,8 @@ async def _recover_interrupted_migrations() -> None:
             message += " Use Resume to continue from the last checkpoint."
         if uses_xdcr(record) and phase == MigrationPhase.REPLICATING:
             message += (
-                " XDCR runs on the source cluster and may still be replicating; resuming picks the "
-                "existing replication back up."
+                " XDCR runs on the source cluster and may still be replicating there; check the source "
+                "cluster's XDCR page and remove the replication if you don't resume."
             )
         record.phase = MigrationPhase.FAILED
         record.error_message = message
