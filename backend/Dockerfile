@@ -62,7 +62,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
 COPY entrypoint.sh .
-RUN chmod +x entrypoint.sh
+# The build context keeps host permissions; an owner-only checkout would leave
+# the code unreadable to the unprivileged app user (uid 10001).
+RUN chmod -R a+rX app && chmod 0755 entrypoint.sh
 
 # The app runs as an unprivileged user (uid 10001). The container starts as
 # root only so entrypoint.sh can fix ownership of volumes created by older,
