@@ -72,6 +72,7 @@ Couchbase node), and network access from this machine to your source and destina
 
 ```bash
 cp env.example .env
+./setup-corporate-ca.sh
 # Edit .env:
 #   MEMORY_CB_PASSWORD   required -- admin password for the agent-memory container
 #   API_AUTH_TOKEN       recommended -- e.g. `openssl rand -hex 32`; the UI asks for it
