@@ -29,7 +29,7 @@ RUN npm run build && \
     chmod -R a+rX dist && \
     chmod 0644 nginx.conf.template
 
-FROM nginxinc/nginx-unprivileged:1.27-alpine AS serve
+FROM nginxinc/nginx-unprivileged:1.29-alpine AS serve
 ENV BACKEND_URL=http://backend:8000
 COPY --from=build /app/nginx.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=build /app/dist /usr/share/nginx/html
