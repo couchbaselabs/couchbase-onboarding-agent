@@ -18,7 +18,7 @@
 # to resolve libstdc++ and friends from the base image as normal.
 FROM couchbase:enterprise-7.6.2 AS cbtools
 
-FROM python:3.11-slim AS base
+FROM python:3.14-slim AS base
 
 WORKDIR /app
 
