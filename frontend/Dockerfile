@@ -1,6 +1,6 @@
 # Build the UI, then serve it with an unprivileged nginx that also proxies
 # /api and /ws to the backend (see nginx.conf.template).
-FROM node:20-slim AS build
+FROM node:26-slim AS build
 WORKDIR /app
 
 # Optional corporate/proxy root CA (see scripts/setup-corporate-ca.sh). No-op when certs/ is empty.
