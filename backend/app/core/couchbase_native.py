@@ -342,7 +342,10 @@ class XdcrManager:
     it down -- there's no ongoing process on this app's side keeping it alive
     the way stream_changes() does for every other connector's CDC."""
 
-    def __init__(self, source: SourceConnectionConfig):
+    def __init__(self, source: SourceConnectionConfig | CouchbaseConnectionConfig):
+        # The cluster the replication is created ON: the source cluster for
+        # forward replication, the destination cluster for reverse (fallback)
+        # replication -- both configs carry the same host/credential/TLS fields.
         self.source = source
 
     def _mgmt_base_url(self) -> str:
@@ -410,20 +413,21 @@ class XdcrManager:
             logger.warning("Error while checking for stale XDCR remote-cluster references: %s", exc)
         return removed
 
-    def create_remote_cluster_ref(self, dest: CouchbaseConnectionConfig, ref_name: str) -> None:
+    def create_remote_cluster_ref(self, dest: CouchbaseConnectionConfig | SourceConnectionConfig, ref_name: str) -> None:
         dest_host = (
             (dest.connection_string or "")
             .replace("couchbases://", "").replace("couchbase://", "")
             .split(",")[0].split("/")[0]
         )
-        dest_port = 18091 if (dest.use_tls or dest.is_capella) else 8091
+        is_capella = bool(getattr(dest, "is_capella", False))
+        dest_port = 18091 if (dest.use_tls or is_capella) else 8091
         payload: dict[str, Any] = {
             "name": ref_name,
             "hostname": f"{dest_host}:{dest_port}",
             "username": dest.username,
             "password": dest.password,
         }
-        if dest.use_tls or dest.is_capella:
+        if dest.use_tls or is_capella:
             payload["demandEncryption"] = 1
         resp = requests.post(
             f"{self._mgmt_base_url()}/pools/default/remoteClusters",

@@ -20,6 +20,9 @@ services:
   couchbase-memory:
     image: couchbase:enterprise-7.6.2
     restart: unless-stopped
+    # Vendor image with its own privilege needs: block privilege escalation but
+    # keep its default capability set (see SECURITY_HARDENING.md).
+    security_opt: [no-new-privileges:true]
     ports:
       - "127.0.0.1:8091-8096:8091-8096"
       - "127.0.0.1:11210-11211:11210-11211"
@@ -39,6 +42,8 @@ services:
     build:
       context: .
       dockerfile: scripts/Dockerfile.init
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
     depends_on:
       couchbase-memory:
         condition: service_healthy
@@ -58,6 +63,7 @@ services:
   qwen-service:
     build: ./qwen-service
     restart: unless-stopped
+    security_opt: [no-new-privileges:true]
     environment:
       QWEN_MODEL: ${QWEN_MODEL_NAME:-qwen3:8b}
     volumes:
@@ -78,6 +84,11 @@ services:
   backend:
     build: ./backend
     restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    # Starts as root only to fix volume ownership, then drops to uid 10001
+    # (entrypoint.sh); these are the capabilities that step needs, nothing else.
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID]
     env_file:
       - path: .env
         required: false
@@ -109,6 +120,8 @@ services:
   frontend:
     build: ./frontend
     restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]   # nginx-unprivileged listens on 8080; nothing needs a capability
     environment:
       BACKEND_URL: http://backend:8000
     ports:

@@ -2,7 +2,7 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import __version__
@@ -27,24 +27,88 @@ logger = logging.getLogger("onboarding_agent")
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     logger.info("%s %s starting up (env=%s)", settings.app_name, __version__, settings.environment)
-    if not auth_enabled():
-        logger.warning(
-            "API_AUTH_TOKEN is not set: the API is open to anyone who can reach it. Set it for any "
-            "deployment that isn't bound to localhost."
-        )
+    for warning in startup_security_warnings():
+        logger.warning(warning)
     await _recover_interrupted_migrations()
     yield
     await runner.cancel_all()
+
+
+def startup_security_warnings() -> list[str]:
+    """Weak or default configuration worth shouting about at boot (PCI DSS
+    8.3.1 "no vendor defaults"; NIST CM-6). Warnings, not hard failures: a
+    single-user laptop run is a supported mode."""
+    out: list[str] = []
+    if not auth_enabled():
+        out.append(
+            "API_AUTH_TOKEN is not set: the API is open to anyone who can reach it. Set it for any "
+            "deployment that isn't bound to localhost."
+        )
+    elif len(settings.api_auth_token) < 32:
+        out.append(
+            "API_AUTH_TOKEN is shorter than 32 characters. Use a random token of at least 32 characters "
+            "(e.g. `openssl rand -hex 32`); the API grants access to every stored database credential."
+        )
+    if settings.memory_cb_password in ("password", "", "CouchbaseDemo123!"):
+        out.append(
+            "MEMORY_CB_PASSWORD is the built-in default. Set a strong password in .env -- it is also the "
+            "memory Couchbase container's administrator password."
+        )
+    if settings.environment != "development" and not settings.state_encryption_key:
+        out.append(
+            "STATE_ENCRYPTION_KEY is not set: the key that encrypts stored credentials is generated into the "
+            "state volume, so a copy of that volume can decrypt them. Set it explicitly (e.g. from a Secret)."
+        )
+    if settings.api_docs_enabled and settings.environment != "development":
+        out.append("ENABLE_API_DOCS is on outside development: /docs, /redoc and /openapi.json are served unauthenticated.")
+    if settings.cors_origin_list and settings.environment != "development":
+        out.append(
+            f"CORS_ORIGINS allows cross-origin API calls from {settings.cors_origin_list}. The bundled UI is "
+            "served same-origin and doesn't need this; keep the list to origins you control."
+        )
+    return out
 
 
 app = FastAPI(
     title=settings.app_name,
     description="Migrate MongoDB, Amazon DynamoDB, Redis, Apache Cassandra, Azure Cosmos DB, or another "
     "Couchbase cluster (Community Edition, Enterprise Edition, or Capella) into Couchbase Server "
-    "or Couchbase Capella -- bulk copy, continuous sync, rollback and post-cutover fallback.",
+    "or Couchbase Capella -- bulk copy, continuous sync, multi-bucket/scope/collection targets, rollback, "
+    "post-cutover fallback and failback (bi-directional replication).",
     version=__version__,
     lifespan=lifespan,
+    docs_url="/docs" if settings.api_docs_enabled else None,
+    redoc_url="/redoc" if settings.api_docs_enabled else None,
+    openapi_url="/openapi.json" if settings.api_docs_enabled else None,
 )
+
+_DOCS_PATHS = {"/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"}
+# The API only ever returns JSON (and websocket upgrades): nothing should
+# render it in a frame, run it as a script, or cache it -- responses carry
+# redacted but still sensitive migration state.
+_API_CSP = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    headers = response.headers
+    headers.setdefault("X-Content-Type-Options", "nosniff")
+    headers.setdefault("X-Frame-Options", "DENY")
+    headers.setdefault("Referrer-Policy", "no-referrer")
+    headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
+    headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
+    if request.url.path not in _DOCS_PATHS:
+        # Swagger/ReDoc load their assets from a CDN; a strict CSP there breaks the page.
+        headers.setdefault("Content-Security-Policy", _API_CSP)
+    if request.url.path.startswith("/api/"):
+        headers.setdefault("Cache-Control", "no-store")
+    forwarded_proto = request.headers.get("x-forwarded-proto", "")
+    if request.url.scheme == "https" or forwarded_proto.split(",")[0].strip() == "https":
+        # Only meaningful once the request actually travelled over TLS (the
+        # bundled stack terminates TLS at an ingress/reverse proxy, if at all).
+        headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return response
 
 app.add_middleware(
     CORSMiddleware,

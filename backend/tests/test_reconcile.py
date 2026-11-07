@@ -9,7 +9,7 @@ from tests.fakes import FakeLoader, FakeSource
 def _loader_with(mid, keys):
     loader = FakeLoader(mid)
     for k in keys:
-        loader.docs[("_default.items", k)] = {"v": 1, "_migration": {"migration_id": str(mid)}}
+        loader.docs[("dest._default.items", k)] = {"v": 1, "_migration": {"migration_id": str(mid)}}
     return loader
 
 
@@ -21,8 +21,8 @@ async def test_removes_documents_deleted_at_source():
     loader = _loader_with(mid, ["a", "b", "c", "gone"])
     outcome = await reconcile(source, loader, ["items"])
     assert outcome.deleted == 1
-    assert ("_default.items", "gone") not in loader.docs
-    assert ("_default.items", "a") in loader.docs
+    assert ("dest._default.items", "gone") not in loader.docs
+    assert ("dest._default.items", "a") in loader.docs
 
 
 async def test_empty_source_listing_never_deletes():

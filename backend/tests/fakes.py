@@ -28,6 +28,8 @@ class FakeSource(SourceConnector):
         self.on_extract_batch = None  # callable run after each extracted batch
         self.fail_stream_times = 0
         self.closed = 0
+        self.reverse_calls: list[tuple[str, str]] = []
+        self.fail_reverse: dict[str, int] = {}  # key -> failures left (-1: forever)
 
     # -- helpers for tests
     def write(self, container: str, key: str, body: dict) -> None:
@@ -97,6 +99,12 @@ class FakeSource(SourceConnector):
                 yield k
 
     async def apply_reverse(self, container, op, key, body, source_key, types=None) -> None:
+        self.reverse_calls.append((op, key))
+        remaining = self.fail_reverse.get(key, 0)
+        if remaining:
+            if remaining > 0:
+                self.fail_reverse[key] = remaining - 1
+            raise RuntimeError(f"source rejected {key}")
         if op == "delete":
             self.rows.pop((container, key), None)
         else:
@@ -115,12 +123,15 @@ class FakeClient:
 
 
 class FakeLoader:
-    """Destination bucket as a dict keyed by (scope.collection, key)."""
+    """Destination as a dict keyed by (bucket.scope.collection, key). `targets`
+    maps a container to its keyspaces (default: one, dest._default.<container>)."""
 
     def __init__(self, migration_id, *, preexisting: dict[tuple[str, str], dict] | None = None,
                  existing_keyspaces: set[str] | None = None, journal_keyspaces: set[str] | None = None,
-                 passthrough: bool = False):
+                 passthrough: bool = False, targets: dict[str, list[str]] | None = None):
         self.migration_id = migration_id
+        self.targets = dict(targets or {})
+        self.reverse_calls: list[tuple[str, str]] = []
         self.docs: dict[tuple[str, str], dict] = dict(preexisting or {})
         self.keyspaces: set[str] = set(existing_keyspaces or set())
         self.journal_keyspaces = set(journal_keyspaces or set())
@@ -134,10 +145,17 @@ class FakeLoader:
 
     @property
     def journal_keyspace(self) -> str:
-        return "onboarding_agent.rb_test"
+        return "dest.onboarding_agent.rb_test"
+
+    def keyspaces_for(self, container: str) -> list[str]:
+        return self.targets.get(container) or [f"dest._default.{container}"]
 
     def keyspace_for(self, container: str) -> str:
-        return f"_default.{container}"
+        return self.keyspaces_for(container)[0]
+
+    def all_keyspaces(self) -> set[str]:
+        return {ks for c in self.targets for ks in self.keyspaces_for(c)} | {
+            ks for (ks, _) in self.docs}
 
     def existing_keyspaces(self) -> set[str]:
         return set(self.keyspaces)
@@ -145,10 +163,10 @@ class FakeLoader:
     async def ensure_collections(self, containers):
         created = []
         for c in containers:
-            ks = self.keyspace_for(c)
-            if ks not in self.keyspaces:
-                self.keyspaces.add(ks)
-                created.append(ks)
+            for ks in self.keyspaces_for(c):
+                if ks not in self.keyspaces:
+                    self.keyspaces.add(ks)
+                    created.append(ks)
         return created
 
     async def ensure_indexes(self, containers, *, cas_index):
@@ -174,28 +192,28 @@ class FakeLoader:
         if reject_all:
             self.fail_everything -= 1
         for d in docs:
-            ks = self.keyspace_for(d.container)
             if reject_all or self.fail_keys.get(d.key, 0) > 0:
                 if not reject_all:
                     self.fail_keys[d.key] -= 1
                 result.docs_failed += 1
                 result.failed_keys.append((d.key, "temporary failure"))
                 continue
-            result.journaled += int(self._journal(ks, d.key))
-            body = dict(d.body)
-            if not self.passthrough:
-                body["_migration"] = {"migration_id": str(self.migration_id),
-                                      "migrated_at": datetime.utcnow().isoformat()}
-            self.docs[(ks, d.key)] = body
+            for ks in self.keyspaces_for(d.container):
+                result.journaled += int(self._journal(ks, d.key))
+                body = dict(d.body)
+                if not self.passthrough:
+                    body["_migration"] = {"migration_id": str(self.migration_id),
+                                          "migrated_at": datetime.utcnow().isoformat()}
+                self.docs[(ks, d.key)] = body
             result.docs_written += 1
         return result
 
     async def delete_batch(self, container: str, keys: list[str]) -> LoadResult:
         result = LoadResult()
-        ks = self.keyspace_for(container)
         for k in keys:
-            result.journaled += int(self._journal(ks, k))
-            self.docs.pop((ks, k), None)
+            for ks in self.keyspaces_for(container):
+                result.journaled += int(self._journal(ks, k))
+                self.docs.pop((ks, k), None)
             result.docs_written += 1
         return result
 
@@ -203,7 +221,9 @@ class FakeLoader:
         return await self.delete_batch(container, keys)
 
     def count_migrated(self, container: str) -> int:
-        ks = self.keyspace_for(container)
+        return self.count_migrated_in(self.keyspace_for(container))
+
+    def count_migrated_in(self, ks: str) -> int:
         return sum(1 for (k, _), v in self.docs.items()
                    if k == ks and (self.passthrough or v.get("_migration", {}).get("migration_id") == str(self.migration_id)))
 
@@ -214,14 +234,16 @@ class FakeLoader:
         if keys:
             yield keys
 
-    async def purge_migration(self, containers) -> int:
+    async def purge_migration(self, containers, keyspaces=None) -> int:
         n = 0
         for c in containers:
-            ks = self.keyspace_for(c)
-            for key in [key for (k, key), v in self.docs.items()
-                        if k == ks and v.get("_migration", {}).get("migration_id") == str(self.migration_id)]:
-                del self.docs[(ks, key)]
-                n += 1
+            for ks in self.keyspaces_for(c):
+                if keyspaces is not None and ks not in keyspaces:
+                    continue
+                for key in [key for (k, key), v in self.docs.items()
+                            if k == ks and v.get("_migration", {}).get("migration_id") == str(self.migration_id)]:
+                    del self.docs[(ks, key)]
+                    n += 1
         return n
 
     async def restore_journal(self):

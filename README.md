@@ -1,4 +1,4 @@
-# Couchbase Onboarding Agent
+# Couchbase Labs Onboarding Agent
 
 Migrate **MongoDB**, **Amazon DynamoDB**, **Redis**, **Apache Cassandra**, **Azure Cosmos DB**, or another
 **Couchbase** cluster (Community Edition, Enterprise Edition, or Capella) into **Couchbase Server** or
@@ -6,8 +6,11 @@ Migrate **MongoDB**, **Amazon DynamoDB**, **Redis**, **Apache Cassandra**, **Azu
 model.
 
 Every source supports the three migration modes, including **bulk copy + continuous sync** with no gap
-between the two, resumable checkpoints, a precise **rollback** of the destination, and a **fallback sync**
-that keeps the source current after cutover so applications can move back without losing writes.
+between the two, resumable checkpoints, a precise **rollback** of the destination, and **bi-directional
+replication**: a **fallback sync** keeps the source current after cutover so applications can move back
+without losing writes, and **failback** resumes forward sync from that point so they can return to
+Couchbase without another bulk copy. Each source container can be mapped to **one or more
+bucket.scope.collection targets** in the destination.
 
 <img width="1470" height="811" alt="Couchbase Onboarding Agent dashboard" src="https://github.com/user-attachments/assets/917b19ef-0db2-44f5-9dae-6d6c764b1027" />
 
@@ -35,8 +38,11 @@ that keeps the source current after cutover so applications can move back withou
   | Continuous replication (`cdc_live`) | Change capture only, no separate bulk copy: starts from now on MongoDB, from what the stream retains on DynamoDB (24 h), and from the full data set on the polling/feed-based sources | at cutover |
   | Bulk copy + continuous sync (`full_load_and_cdc`) | Change position recorded, bulk copy, catch-up on changes made during the copy, then live sync | at cutover |
 
+- **Destination mapping**: every container maps to one or more `bucket.scope.collection` targets (blank
+  parts use the defaults; extra targets keep a second copy in another bucket, scope or collection; buckets
+  that don't exist are created on start). The first target is the primary copy.
 - **Validation** before approval: connectivity, versions, change-capture availability and how it behaves,
-  collection-name collisions, document size, TLS and certificate verification, delete propagation,
+  keyspace collisions across targets, document size, TLS and certificate verification, delete propagation,
   rollback safety (whether target collections already exist), and XDCR vBucket compatibility.
 - **Live dashboard**: sync stage, throughput, replication lag, checkpoints, stream restarts,
   reconciliation results, failed writes, verification counts, bottleneck findings.
@@ -50,15 +56,15 @@ that keeps the source current after cutover so applications can move back withou
 
 ## Supported sources
 
-| Source | Versions | Bulk copy | Continuous sync | Resumes from checkpoint | Deletes | Fallback after cutover |
-|---|---|---|---|---|---|---|
-| MongoDB (Atlas or self-managed) | 3.6 - 8.0 | `find()` scan | Change streams (replica set or sharded cluster) | Yes | In stream | Yes |
-| Amazon DynamoDB | current API | Paginated `Scan` | DynamoDB Streams, following shard splits | Yes | In stream | Yes |
-| Redis (OSS, Cloud, Enterprise) | 5.0+ | Type-aware `SCAN` | Keyspace notifications + re-read of changed keys | Re-scans after a restart | In stream | Yes |
-| Apache Cassandra / DSE | 2.1 - 4.x | Paged `SELECT *` | `WRITETIME()` polling | Yes | Reconciliation | Yes |
-| Azure Cosmos DB (SQL API) | current API | Cross-partition query | Change feed (latest version mode) | Yes | Reconciliation | Yes |
-| Couchbase Community Edition | 7.2 - 8.0.2 | `cbbackupmgr` | CAS polling via the Query service | Yes | Reconciliation | Yes |
-| Couchbase Enterprise Edition | 7.2 - 8.0.2 | `cbbackupmgr` | XDCR | Yes (XDCR) | In stream | Yes |
+| Source | Versions | Bulk copy | Continuous sync | Resumes from checkpoint | Deletes | Fallback after cutover (reverse) | Failback |
+|---|---|---|---|---|---|---|---|
+| MongoDB (Atlas or self-managed) | 3.6 - 8.0 | `find()` scan | Change streams (replica set or sharded cluster) | Yes | In stream | `bulk_write` | Resume token |
+| Amazon DynamoDB | current API | Paginated `Scan` | DynamoDB Streams, following shard splits | Yes | In stream | `BatchWriteItem` | Shard position |
+| Redis (OSS, Cloud, Enterprise) | 5.0+ | Type-aware `SCAN` | Keyspace notifications + re-read of changed keys | Re-scans after a restart | In stream | Pipeline | Keyspace events |
+| Apache Cassandra / DSE | 2.1 - 4.x | Paged `SELECT *` | `WRITETIME()` polling | Yes | Reconciliation | `execute_concurrent` | Write time |
+| Azure Cosmos DB (SQL API) | current API | Cross-partition query | Change feed (latest version mode) | Yes | Reconciliation | Concurrent upserts | Continuation token |
+| Couchbase Community Edition | 7.2 - 8.0.2 | `cbbackupmgr` | CAS polling via the Query service | Yes | Reconciliation | `upsert_multi` | CAS watermark |
+| Couchbase Enterprise Edition | 7.2 - 8.0.2 | `cbbackupmgr` | XDCR (one replication per target bucket) | Yes (XDCR) | In stream | Reverse XDCR (self-managed destination) or `upsert_multi` | New XDCR replication |
 | Couchbase Capella (as a source) | current | `cbbackupmgr` | CAS polling via the Query service | Yes | Reconciliation | Yes |
 
 "Reconciliation" means a periodic key comparison removes documents deleted at the source (see
@@ -162,10 +168,43 @@ collection stops for confirmation.
 
 Documents from non-Couchbase sources carry a `_migration` field (migration id, source container, write
 time, and the source identity and type hints fallback needs). Verification, reconciliation and rollback
-select by it. Each source container becomes a collection (a scope named after the database/keyspace by
-default); the wizard lets you set explicit names, and validation flags names that would collide.
+select by it.
 
-## Cutover, rollback and fallback
+### Targets: where each container lands
+
+Each source container is written to **one or more** `bucket.scope.collection` keyspaces, set in the wizard's
+*Containers to migrate & where they land* card (`ContainerMigrationSpec.targets` in the API):
+
+- A blank bucket means the plan's destination bucket; a blank scope means a scope named after the source
+  database/keyspace (or `_default`); a blank collection means a collection named after the container.
+  Explicit names are sanitized the same way (`_default` is kept as-is).
+- Extra targets receive exactly the same upserts and deletes (bulk copy, continuous sync and reconciliation),
+  e.g. a hot copy of `orders` in a second bucket, or the same data in two scopes for two applications. The
+  **first target is the primary copy**: verification counts it, reconciliation compares it to the source, and
+  fallback sync reads changes back from it (every target is still verified and listed).
+- Every bucket named anywhere in the plan is auto-provisioned if missing, and rollback knows which buckets
+  and collections the migration created across all of them. The rollback journal lives in the plan's
+  destination bucket.
+- Couchbase sources keep their own scope.collection names (cbbackupmgr and XDCR move the bucket structure
+  as-is), so only the target *bucket* varies per target; the whole source bucket is restored into / replicated
+  to each target bucket (one XDCR replication per bucket).
+
+Writes are batched per keyspace with the SDK's `upsert_multi`/`remove_multi` (pipelined over the KV
+connections); keyspaces that need pre-image journaling for rollback use the per-document path instead.
+
+## Cutover, rollback, fallback and failback (bi-directional replication)
+
+```
+source ──forward sync──▶ Couchbase      REPLICATING
+                 cut over               COMPLETE          (Couchbase is the system of record)
+source ◀─fallback sync── Couchbase      FALLBACK_SYNCING  (changes written back to the source)
+                 fall back              FELL_BACK         (source is the system of record; position recorded)
+source ──forward sync──▶ Couchbase      REPLICATING       ("Return to Couchbase": failback, no bulk copy)
+                 cut over again         COMPLETE
+```
+
+The two directions never run at the same time (they would echo each other's writes), but a migration can
+move between them as many times as needed.
 
 ### Cutover
 
@@ -202,23 +241,55 @@ new collections if you need a clean rollback.
 
 ### Fallback sync (after cutover)
 
-**Start fallback sync** writes every change made in Couchbase since cutover back to the source -- upserts in
-CAS order and deletes -- restoring source-native types (ObjectId, dates, sets, binary, Redis types and TTLs)
-from the recorded hints. If you need to move applications back:
+**Start fallback sync** writes every change made in Couchbase since cutover back to the source, restoring
+source-native types (ObjectId, dates, sets, binary, Redis types and TTLs) from the recorded hints. The method
+is chosen per source:
+
+| Source | Reverse method | How |
+|---|---|---|
+| Couchbase Enterprise (self-managed destination) | **Reverse XDCR** | A replication is created on the destination cluster back to the source bucket; XDCR streams mutations and deletions from DCP -- no polling, no index |
+| MongoDB | CAS poll + `bulk_write` | One unordered bulk write per batch |
+| Amazon DynamoDB | CAS poll + `BatchWriteItem` | 25 items per call, unprocessed items retried with backoff |
+| Redis | CAS poll + pipeline | One pipelined round trip per batch |
+| Apache Cassandra | CAS poll + `execute_concurrent` | Prepared statements, token-aware, many in flight |
+| Azure Cosmos DB | CAS poll + concurrent upserts | Async SDK, bounded concurrency |
+| Couchbase CE / Capella | CAS poll + `upsert_multi` | Pipelined SDK multi-ops |
+
+"CAS poll" reads documents whose `META().cas` moved past a watermark (N1QL on the primary keyspace, in CAS
+order, with an overlap window for HLC skew), coalesces them per key and hands each page to the source's bulk
+API; the watermark only moves past a page once it's applied, and keys the source rejects are retried, then
+recorded as failed events. Deletes are detected by paging the destination's keys against the recorded key
+set every `FALLBACK_DELETE_CHECK_INTERVAL_S`.
+
+If you need to move applications back:
 
 1. Stop writes to Couchbase.
-2. Click **Fall back to source...** and confirm. A final drain runs, the migration becomes `fell_back`, and
-   the source is the system of record again with nothing lost.
+2. Click **Fall back to source...** and confirm. The source's current change position is recorded (for a
+   later failback), a final drain runs, the migration becomes `fell_back`, and the source is the system of
+   record again with nothing lost.
 
 Or **Stop fallback sync** to stay on Couchbase. Fallback is the only path that writes to the source, and only
 when an operator starts it; the source user needs write permissions for it.
 
+### Failback (return to Couchbase)
+
+From `fell_back`, **Return to Couchbase (resume sync)** restarts forward sync from the change position
+recorded when applications fell back -- Mongo resume tokens, DynamoDB shard positions, Cosmos continuation
+tokens, Cassandra/Couchbase timestamps, or a fresh XDCR replication (which re-checks every document and
+only sends what's missing). Couchbase catches up on everything written to the source meanwhile, without a
+new bulk copy; keep applications on the source until the next **Cut over**, which completes the round trip
+(the migration records every cutover in `cutover_history` and counts `failbacks`). Reconciliation covers
+deletes made at the source during the fallback period on sources whose change capture doesn't report them.
+
 ## Security
 
-- **API token.** Set `API_AUTH_TOKEN` to require `Authorization: Bearer <token>` on every API call and a
-  `?token=` on websockets (the UI prompts for it and keeps it for the browser tab). Only `/api/health` and
-  `/api/config` are open. Without a token the API is open to anyone who can reach it -- acceptable only on
-  a single-user machine with ports bound to localhost, which is what Compose does.
+- **API token.** Set `API_AUTH_TOKEN` (32+ random characters) to require `Authorization: Bearer <token>` on
+  every API call; websockets carry it as the `coa-auth` subprotocol (the UI prompts for it and keeps it for
+  the browser tab; `?token=` still works for older clients). Only `/api/health` and `/api/config` are open.
+  Repeated bad tokens lock the source IP out (10 failures in 15 min -> 30 min, `429` + `Retry-After`), and
+  every rejected attempt is logged under `onboarding_agent.auth`. Without a token the API is open to anyone
+  who can reach it -- acceptable only on a single-user machine with ports bound to localhost, which is what
+  Compose does.
 - **Credentials.** Source and destination credentials are masked (`********`) in every API response and
   websocket frame, and encrypted at rest in the state file with a Fernet key (`STATE_ENCRYPTION_KEY`, or a
   key generated next to the state file on first start). Back up the key together with the state volume.
@@ -229,10 +300,18 @@ when an operator starts it; the source user needs write permissions for it.
   change-feed read permissions, and `CONFIG GET` on Redis for introspection). Fallback sync needs write
   access. The destination user needs to create scopes, collections and indexes, and read/write documents.
   Couchbase Enterprise Edition sources need XDCR admin rights on the source to set up replication.
-- **Containers**: the backend and UI images run as non-root users, and the UI sets a restrictive
-  Content-Security-Policy.
+- **Headers and docs.** The API and the UI send a strict Content-Security-Policy, `X-Frame-Options: DENY`,
+  `nosniff`, `Referrer-Policy`, `Permissions-Policy`, `Cache-Control: no-store` on API responses, and HSTS
+  once requests arrive over HTTPS. Interactive API docs (`/docs`, `/redoc`) are served only with
+  `ENVIRONMENT=development` or `ENABLE_API_DOCS=true`; CORS is off outside development unless
+  `CORS_ORIGINS` is set.
+- **Containers**: the backend and UI images run as non-root users; Compose adds `no-new-privileges` on every
+  service and drops all Linux capabilities from the app containers (the backend keeps only the five it needs
+  to fix volume ownership before dropping to uid 10001).
 
-Report vulnerabilities privately -- see [SECURITY.md](SECURITY.md).
+The full list of controls, with the CIS / NIST / PCI DSS requirements each one maps to, is in
+[SECURITY_HARDENING.md](SECURITY_HARDENING.md). Report vulnerabilities privately -- see
+[SECURITY.md](SECURITY.md).
 
 ## Source prerequisites and notes
 

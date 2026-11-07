@@ -248,6 +248,9 @@ class SeenRecently:
         self._items: OrderedDict[tuple[str, int], None] = OrderedDict()
         self._limit = limit
 
+    def contains(self, item: tuple[str, int]) -> bool:
+        return item in self._items
+
     def add(self, item: tuple[str, int]) -> bool:
         if item in self._items:
             return False

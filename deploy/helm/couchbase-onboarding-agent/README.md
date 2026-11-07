@@ -86,7 +86,7 @@ backend:
 `ghcr.io/couchbaselabs/` for each release tag. To use your own registry:
 
 ```bash
-REG=registry.example.com/team TAG=1.1.0
+REG=registry.example.com/team TAG=1.0.0
 docker build -t $REG/couchbaselabs/couchbase-onboarding-agent-backend:$TAG backend
 docker build -t $REG/couchbaselabs/couchbase-onboarding-agent-frontend:$TAG frontend
 docker build -t $REG/couchbaselabs/couchbase-onboarding-agent-memory-init:$TAG -f scripts/Dockerfile.init .

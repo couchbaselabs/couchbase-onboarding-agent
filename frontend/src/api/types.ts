@@ -146,11 +146,24 @@ export interface ValidationReport {
   has_warnings: boolean;
 }
 
+/** One destination keyspace. Blank parts fall back to the plan's defaults
+ * (destination bucket; a scope named after the source database or `_default`;
+ * a collection named after the container). */
+export interface TargetKeyspace {
+  bucket?: string | null;
+  scope?: string | null;
+  collection?: string | null;
+}
+
 export interface ContainerMigrationSpec {
   container_name: string;
   include: boolean;
+  /** Legacy single-target fields; ignored when `targets` is non-empty. */
   target_scope_name?: string | null;
   target_collection_name?: string | null;
+  /** One or more keyspaces every document of this container is written to.
+   * The first is the primary copy (counts, reconciliation, fallback). */
+  targets: TargetKeyspace[];
 }
 
 export interface MigrationPlanCreate {
@@ -167,6 +180,7 @@ export interface MigrationPlanCreate {
   journal_overwrites?: boolean;
   create_destination_indexes?: boolean;
   is_continuous?: boolean;
+  target_buckets?: string[];
 }
 
 export interface BottleneckFinding {
@@ -216,6 +230,8 @@ export interface MigrationRecord {
   sync: SyncState;
   rollback_state: RollbackState;
   fallback: FallbackState;
+  cutover_history?: string[];
+  failbacks?: number;
   failed_events: FailedEvent[];
   cutover_at?: string | null;
   verification: ContainerVerification[];
@@ -249,6 +265,7 @@ export interface SyncState {
 export interface RollbackState {
   captured: boolean;
   bucket_created_by_migration: boolean;
+  buckets_created_by_migration?: string[];
   preexisting_collections: string[];
   owned_collections: string[];
   journal_keyspace?: string | null;
@@ -261,6 +278,8 @@ export interface FallbackState {
   active: boolean;
   started_at?: string | null;
   stopped_at?: string | null;
+  /** "cas_poll" (N1QL polling + the source's bulk write API) or "xdcr" (reverse XDCR). */
+  method?: string | null;
   changes_applied: number;
   deletes_applied: number;
   errors: number;

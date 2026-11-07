@@ -44,6 +44,8 @@ from app.config import get_settings
 from app.core.connectors.base import (
     CdcCapabilities,
     ChangeEvent,
+    ReverseBatchResult,
+    ReverseOp,
     SourceConnector,
     SourceConnectorError,
     SourceDocument,
@@ -450,16 +452,49 @@ class RedisConnector(SourceConnector):
         types: dict[str, str] | None = None,
     ) -> None:
         client = self._connect()
-        redis_key = (source_key or {}).get("redis_key") or (body or {}).get("redis_key")
+        pipe = client.pipeline(transaction=True)
+        self._queue_reverse(pipe, ReverseOp(op=op, key=key, body=body, source_key=source_key, types=types))
+        await pipe.execute()
+
+    async def apply_reverse_batch(self, container: str, ops: list[ReverseOp]) -> ReverseBatchResult:
+        """One pipelined round trip for the whole batch (non-transactional, so
+        a single bad key doesn't abort the rest; failures are reported per key)."""
+        result = ReverseBatchResult()
+        if not ops:
+            return result
+        client = self._connect()
+        pipe = client.pipeline(transaction=False)
+        counts: list[int] = []
+        for op in ops:
+            before = len(pipe.command_stack)
+            self._queue_reverse(pipe, op)
+            counts.append(len(pipe.command_stack) - before)
+        try:
+            replies = await pipe.execute(raise_on_error=False)
+        except RedisError as exc:
+            result.failed.extend((op.key, str(exc)) for op in ops)
+            return result
+        pos = 0
+        for op, n in zip(ops, counts):
+            errors = [r for r in replies[pos:pos + n] if isinstance(r, Exception)]
+            pos += n
+            if errors:
+                result.failed.append((op.key, str(errors[0])))
+            else:
+                result.applied += 1
+        return result
+
+    @staticmethod
+    def _queue_reverse(pipe, op: ReverseOp) -> None:
+        redis_key = (op.source_key or {}).get("redis_key") or (op.body or {}).get("redis_key")
         if not redis_key:
-            redis_key = key.split("::", 1)[1] if key.startswith("redis::") else key
-        if op == "delete":
-            await client.delete(redis_key)
+            redis_key = op.key.split("::", 1)[1] if op.key.startswith("redis::") else op.key
+        if op.op == "delete":
+            pipe.delete(redis_key)
             return
-        body = body or {}
+        body = op.body or {}
         kind = body.get("redis_type", "string")
         value = body.get("value")
-        pipe = client.pipeline(transaction=True)
         pipe.delete(redis_key)
         if kind == "string":
             value = decode_binary(value)
@@ -478,4 +513,3 @@ class RedisConnector(SourceConnector):
         ttl = body.get("ttl")
         if ttl:
             pipe.expire(redis_key, int(ttl))
-        await pipe.execute()

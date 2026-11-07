@@ -1,7 +1,7 @@
 """
 Migration lifecycle endpoints: create, validate, approve, start, stop/cutover,
-resume, reconcile, roll back (with a dry-run plan), post-cutover fallback, and
-list/delete. Every response masks credentials (models.schemas.redact_record).
+resume, reconcile, roll back (with a dry-run plan), post-cutover fallback,
+failback (return to Couchbase), and list/delete. Every response masks credentials (models.schemas.redact_record).
 
 Long-running work (bulk copy + sync, rollback, reconciliation, fallback) runs as
 a named background task (core/runner.py), so a second click can't start a
@@ -229,6 +229,22 @@ async def stop_fallback(migration_id: UUID, req: FallbackStopRequest) -> dict[st
         return redact_record(await _engine().stop_fallback(record, req.fall_back_to_source))
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/{migration_id}/failback")
+async def failback_migration(migration_id: UUID) -> dict[str, Any]:
+    """Return to Couchbase after falling back: resume forward sync from the
+    change position recorded at fall-back time. Applications keep writing to
+    the source until the next cutover."""
+    record = await _get(migration_id)
+    engine = _engine()
+    blocker = engine.failback_blocker(record)
+    if blocker:
+        raise HTTPException(400, blocker)
+    if not runner.spawn(str(migration_id), "run", _run_and_remember(migration_id, engine.failback(record))):
+        raise HTTPException(409, "This migration is already running.")
+    await _settle()
+    return redact_record(await _get(migration_id))
 
 
 @router.delete("/{migration_id}")

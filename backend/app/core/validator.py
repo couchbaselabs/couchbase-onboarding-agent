@@ -21,7 +21,7 @@ from app.core.connectors.couchbase_source import CouchbaseSourceConnector
 from app.core.connectors.registry import get_connector
 from app.core.connectors.util import COUCHBASE_MAX_DOC_SIZE_BYTES
 from app.core.couchbase_client import CouchbaseClientError, CouchbaseClusterClient
-from app.core.targets import target_for
+from app.core.targets import Keyspace, targets_for
 from app.models.enums import (
     CONTINUOUS_STRATEGIES,
     MigrationStrategy,
@@ -283,25 +283,33 @@ class MigrationValidator:
             details={"source_vbuckets": source_vbuckets, "dest_vbuckets": dest_vbuckets},
         )
 
+    def _targets(self, spec: ContainerMigrationSpec) -> list[Keyspace]:
+        return targets_for(self.source_config, self.destination_bucket or "", spec)
+
     def _check_naming_compat(self, source: SourceTopologySnapshot) -> None:
-        by_target: dict[tuple[str, str], list[str]] = {}
+        by_target: dict[Keyspace, list[str]] = {}
         spec_by_name = {s.container_name: s for s in self.containers}
+        multi = 0
         for c in source.containers:
             spec = spec_by_name.get(c.name) or ContainerMigrationSpec(container_name=c.name)
             if not spec.include:
                 continue
-            by_target.setdefault(target_for(self.source_config, spec), []).append(c.name)
+            targets = self._targets(spec)
+            multi += int(len(targets) > 1)
+            for ks in targets:
+                by_target.setdefault(ks, []).append(c.name)
 
         collisions = {k: v for k, v in by_target.items() if len(v) > 1}
         passed = not collisions
+        extra = f" {multi} container(s) fan out to more than one keyspace." if multi else ""
         self._add(
-            ValidationCheckId.NAMING_COMPAT, "Container name -> Couchbase collection mapping",
+            ValidationCheckId.NAMING_COMPAT, "Container -> Couchbase bucket.scope.collection mapping",
             ValidationSeverity.WARNING, passed,
-            "Every included container maps to a distinct scope.collection." if passed else
-            f"Multiple source containers sanitize to the same destination collection: {collisions}. "
-            "Set an explicit target collection name for these containers to avoid their documents "
-            "landing in the same collection.",
-            details={"collisions": {f"{s}.{c}": names for (s, c), names in collisions.items()}},
+            ("Every included container maps to distinct keyspace(s)." + extra) if passed else
+            f"Multiple source containers map to the same destination keyspace: "
+            f"{ {k.name: v for k, v in collisions.items()} }. Set an explicit target bucket, scope or collection "
+            "for these containers to avoid their documents landing in the same collection.",
+            details={"collisions": {k.name: names for k, names in collisions.items()}},
         )
 
     def _check_document_size(self, source: SourceTopologySnapshot) -> None:
@@ -374,21 +382,28 @@ class MigrationValidator:
         )
 
     def _check_rollback_safety(self, dest: CouchbaseTopologySnapshot) -> None:
-        bucket = self.destination_bucket or ""
-        existing = set()
-        if bucket in dest.buckets:
+        targets: set[str] = set()
+        buckets: list[str] = []
+        for spec in self.containers:
+            if not spec.include:
+                continue
+            for ks in self._targets(spec):
+                targets.add(ks.name)
+                if ks.bucket not in buckets:
+                    buckets.append(ks.bucket)
+        existing: set[str] = set()
+        for bucket in buckets:
+            if bucket not in dest.buckets:
+                continue
             try:
                 client = CouchbaseClusterClient(self.dest_config)
                 try:
                     scopes = client.get_scopes_and_collections(bucket)
                 finally:
                     client.close()
-                existing = {f"{s}.{c}" for s, cols in scopes.items() for c in cols}
+                existing |= {f"{bucket}.{s}.{c}" for s, cols in scopes.items() for c in cols}
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Could not list destination collections for the rollback check: %s", exc)
-        targets = {
-            "{}.{}".format(*target_for(self.source_config, spec)) for spec in self.containers if spec.include
-        }
         shared = sorted(targets & existing)
         if not shared:
             self._add(

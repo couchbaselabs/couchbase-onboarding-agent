@@ -64,6 +64,8 @@ export default function MigrationDetailPage() {
   const draining = sync.stage === "draining";
   const canResume = continuous && (phase === "failed" || phase === "stopped") && !record.cutover_at && !!record.approved_at;
   const canFallback = phase === "complete" && !!record.cutover_at;
+  const canFailback = phase === "fell_back" && continuous;
+  const targetBuckets = plan.target_buckets?.length ? plan.target_buckets : [plan.destination_bucket];
 
   return (
     <>
@@ -80,8 +82,9 @@ export default function MigrationDetailPage() {
           </h1>
           <p className="page-subtitle">
             {SOURCE_TYPE_LABELS[plan.source.source_type]} ({plan.source.label}) &rarr; {plan.destination.label} /{" "}
-            {plan.destination_bucket}
+            {targetBuckets.join(", ")}
             {record.cutover_at && <> &middot; cut over {formatUtc(record.cutover_at)}</>}
+            {!!record.failbacks && <> &middot; {record.failbacks} failback{record.failbacks === 1 ? "" : "s"}</>}
           </p>
         </div>
         <div className="header-actions">
@@ -136,6 +139,16 @@ export default function MigrationDetailPage() {
               )}
             </>
           )}
+          {canFailback && (
+            <button
+              className="btn btn-primary"
+              disabled={busy}
+              title="Resume forward sync from the position recorded when applications fell back. Couchbase catches up on everything written to the source since; cut over again when it's caught up."
+              onClick={() => run(() => api.failback(mid))}
+            >
+              Return to Couchbase (resume sync)
+            </button>
+          )}
           {ROLLBACK_PHASES.has(phase) && (
             <button className="btn btn-danger-outline" disabled={busy} onClick={() => setShowRollback(true)}>
               Roll back...
@@ -149,6 +162,17 @@ export default function MigrationDetailPage() {
           <div className="helper-banner helper-banner-neutral" role="status">
             <Loader2 size={14} className="cb-spin" />
             <span>Cutover in progress: applying the remaining changes, then verifying counts.</span>
+          </div>
+        )}
+        {phase === "fell_back" && (
+          <div className="helper-banner helper-banner-neutral" role="status">
+            <CheckCircle2 size={14} />
+            <span>
+              The source is the system of record again.
+              {continuous
+                ? " Forward sync can resume from the position recorded at fall-back time, so moving back to Couchbase later doesn't need another bulk copy."
+                : ""}
+            </span>
           </div>
         )}
         {record.error_message && (

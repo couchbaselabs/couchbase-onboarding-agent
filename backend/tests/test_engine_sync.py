@@ -21,7 +21,7 @@ from app.models.schemas import (
 )
 from tests.fakes import FakeClient, FakeLoader, FakeSource
 
-ITEMS = "_default.items"
+ITEMS = "dest._default.items"
 
 
 def make_record(strategy: MigrationStrategy, containers=("items",), **plan_kwargs) -> MigrationRecord:
@@ -76,7 +76,7 @@ async def wired(monkeypatch):
     monkeypatch.setattr(me.MigrationEngine, "_loader", fake_loader)
     monkeypatch.setattr(me, "CouchbaseClusterClient", lambda cfg: FakeClient())
     monkeypatch.setattr(me, "get_connector", lambda cfg: source)
-    monkeypatch.setattr(me.MigrationEngine, "_ensure_destination_bucket", lambda self, record: False)
+    monkeypatch.setattr(me.MigrationEngine, "_ensure_destination_buckets", lambda self, record: [])
     monkeypatch.setattr(me.MigrationEngine, "_remember", _noop)
     yield source, state
     await runner.cancel_all()
@@ -183,7 +183,7 @@ async def test_rollback_restores_overwritten_and_drops_created(wired):
     await wait_for(lambda: record.phase == MigrationPhase.COMPLETE)
     docs = state["loader"].docs
     assert docs[(ITEMS, "k1")]["v"] == "from source"
-    assert record.rollback_state.owned_collections == ["_default.fresh"]
+    assert record.rollback_state.owned_collections == ["dest._default.fresh"]
 
     plan = engine.plan_rollback(record)
     assert plan.allowed and not plan.requires_cutover_confirmation
@@ -194,7 +194,7 @@ async def test_rollback_restores_overwritten_and_drops_created(wired):
     assert docs[(ITEMS, "k1")] == {"v": "original"}
     assert docs[(ITEMS, "untouched")] == {"v": "keep"}
     assert (ITEMS, "k2") not in docs
-    assert "_default.fresh" in state["loader"].dropped
+    assert "dest._default.fresh" in state["loader"].dropped
 
 
 async def test_rollback_after_cutover_needs_confirmation(wired):

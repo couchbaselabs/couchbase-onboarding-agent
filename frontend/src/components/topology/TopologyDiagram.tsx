@@ -68,7 +68,7 @@ export default function TopologyDiagram({
           {throughputPerSec != null ? `${throughputPerSec.toFixed(1)}/s` : "0.0/s"}
         </div>
         <div className="topo-circle" style={{ borderColor: ringColor, boxShadow: flowing ? `0 0 14px ${tint(ringColor, 35)}` : undefined }}>
-          <BrandMark title="Couchbase Onboarding Agent" />
+          <BrandMark title="Couchbase Labs Onboarding Agent" />
         </div>
         <div className="topo-agent-label">
           ONBOARDING

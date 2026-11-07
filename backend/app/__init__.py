@@ -1,3 +1,3 @@
-"""Couchbase Onboarding Agent backend."""
+"""Couchbase Labs Onboarding Agent backend."""
 
-__version__ = "1.1.0"
+__version__ = "1.0.0"

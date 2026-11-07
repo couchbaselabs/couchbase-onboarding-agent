@@ -45,6 +45,8 @@ from app.config import get_settings
 from app.core.connectors.base import (
     CdcCapabilities,
     ChangeEvent,
+    ReverseBatchResult,
+    ReverseOp,
     SourceConnector,
     SourceConnectorError,
     SourceDocument,
@@ -142,6 +144,7 @@ def _cql_value(cql_type: str, value: Any) -> Any:
 class CassandraConnector(SourceConnector):
     def __init__(self, config: SourceConnectionConfig):
         super().__init__(config)
+        self._prepared_cache: dict[str, Any] = {}
         self._cluster: Cluster | None = None
         self._session = None
 
@@ -424,24 +427,65 @@ class CassandraConnector(SourceConnector):
         types: dict[str, str] | None = None,
     ) -> None:
         session = self._connect()
+        stmt, values = self._reverse_statement(
+            container, ReverseOp(op=op, key=key, body=body, source_key=source_key, types=types),
+        )
+        await asyncio.to_thread(session.execute, stmt, values)
+
+    def _reverse_statement(self, container: str, op: ReverseOp):
+        self._connect()  # populates cluster metadata
         table_meta = self._cluster.metadata.keyspaces[self._keyspace()].tables[container]  # type: ignore[union-attr]
         key_cols = _primary_key_columns(table_meta)
-        if op == "delete":
-            ident = dict(source_key or {})
+        if op.op == "delete":
+            ident = dict(op.source_key or {})
             missing = [c for c in key_cols if c not in ident]
             if missing:
                 raise SourceConnectorError(
-                    f"Can't delete '{key}' from Cassandra table '{container}': primary key columns "
+                    f"Can't delete '{op.key}' from Cassandra table '{container}': primary key columns "
                     f"{missing} are unknown."
                 )
             where = " AND ".join(f'"{c}" = ?' for c in key_cols)
-            stmt = session.prepare(f'DELETE FROM "{container}" WHERE {where}')
+            stmt = self._prepared(f'DELETE FROM "{container}" WHERE {where}')
             values = [_cql_value(str(table_meta.columns[c].cql_type), ident[c]) for c in key_cols]
-            await asyncio.to_thread(session.execute, stmt, values)
-            return
-        doc = {k: v for k, v in (body or {}).items() if k in table_meta.columns}
-        payload = json.dumps(_json_for_insert(doc))
-        await asyncio.to_thread(session.execute, f'INSERT INTO "{container}" JSON %s', (payload,))
+            return stmt, values
+        doc = {k: v for k, v in (op.body or {}).items() if k in table_meta.columns}
+        return self._prepared(f'INSERT INTO "{container}" JSON ?'), (json.dumps(_json_for_insert(doc)),)
+
+    def _prepared(self, cql: str):
+        stmt = self._prepared_cache.get(cql)
+        if stmt is None:
+            stmt = self._prepared_cache[cql] = self._connect().prepare(cql)
+        return stmt
+
+    async def apply_reverse_batch(self, container: str, ops: list[ReverseOp]) -> ReverseBatchResult:
+        """Prepared statements executed through the driver's execute_concurrent
+        (token-aware, many in flight per connection) rather than a LOGGED BATCH,
+        which Cassandra discourages across partitions."""
+        from cassandra.concurrent import execute_concurrent
+
+        result = ReverseBatchResult()
+        if not ops:
+            return result
+        statements = []
+        prepared_ops: list[ReverseOp] = []
+        for op in ops:
+            try:
+                statements.append(self._reverse_statement(container, op))
+                prepared_ops.append(op)
+            except Exception as exc:  # noqa: BLE001
+                result.failed.append((op.key, str(exc)))
+        if not statements:
+            return result
+        session = self._connect()
+        outcomes = await asyncio.to_thread(
+            execute_concurrent, session, statements, 64, raise_on_first_error=False,
+        )
+        for op, (ok, res) in zip(prepared_ops, outcomes):
+            if ok:
+                result.applied += 1
+            else:
+                result.failed.append((op.key, str(res)))
+        return result
 
 
 def _primary_key_columns(table_meta) -> list[str]:

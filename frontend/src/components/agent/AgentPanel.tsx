@@ -98,7 +98,7 @@ export default function AgentPanel() {
         {turns.length === 0 && (
           <div style={{ fontSize: 12.5, lineHeight: 1.55, display: "flex", flexDirection: "column", gap: 12 }}>
             <div>
-              Welcome to the Couchbase Onboarding Agent. I help plan and de-risk your migration from MongoDB,
+              Welcome to the Couchbase Labs Onboarding Agent. I help plan and de-risk your migration from MongoDB,
               DynamoDB, Redis, Cassandra, Cosmos DB, or another Couchbase cluster into Couchbase.
             </div>
             <div>

@@ -37,12 +37,26 @@ Couchbase sources:
     polling through the same sync loop as every other source (documents written
     unmodified -- "passthrough").
 
+Targets: every source container maps to one or more bucket.scope.collection
+keyspaces (core/targets.py); each receives the same writes, the first is the
+primary copy used for counts, reconciliation and fallback.
+
 Rollback (plan_rollback / rollback) undoes the destination side precisely:
 collections the migration created are dropped, its documents in pre-existing
 collections are removed by tag, and documents it overwrote or deleted there are
-restored from the pre-image journal (see couchbase_loader.py). After cutover,
-fallback sync (core/fallback.py) writes Couchbase changes back to the source so
-applications can move back without losing writes.
+restored from the pre-image journal (see couchbase_loader.py).
+
+Bi-directional operation (core/fallback.py):
+  cut over -> COMPLETE: Couchbase is the system of record.
+  fallback sync -> FALLBACK_SYNCING: changes made in Couchbase are written back
+    to the source (reverse XDCR for an Enterprise source with a self-managed
+    destination; otherwise CAS polling + the source's bulk write API).
+  fall back -> FELL_BACK: the source is the system of record again. The
+    source's change position is captured at that moment.
+  failback -> REPLICATING: forward sync resumes from that position, so Couchbase
+    catches up on everything written to the source while applications were
+    back on it; another cutover completes the round trip. No bulk copy is
+    repeated, and the two directions never run at the same time.
 """
 from __future__ import annotations
 
@@ -68,10 +82,10 @@ from app.core.connectors.util import utcnow
 from app.core.couchbase_client import CouchbaseClusterClient
 from app.core.couchbase_loader import CouchbaseLoader
 from app.core.couchbase_native import CbBackupMgrRunner, CouchbaseNativeError, XdcrManager
-from app.core.fallback import FallbackSync, discard_state
+from app.core.fallback import FallbackSync, ReverseXdcr, discard_state
 from app.core.reconcile import reconcile
 from app.core.store import MigrationStore
-from app.core.targets import target_map
+from app.core.targets import Keyspace, buckets_in, qualify_keyspace, target_map
 from app.core.validator import MigrationValidator
 from app.memory.couchbase_memory import AgentMemoryStore
 from app.models.enums import (
@@ -205,10 +219,31 @@ class MigrationEngine:
     def _included_containers(self, record: MigrationRecord) -> list[str]:
         return [c.container_name for c in record.plan.containers if c.include]
 
-    def _target_map(self, record: MigrationRecord) -> dict[str, tuple[str, str]]:
-        return target_map(record.plan.source, record.plan.containers)
+    def _target_map(self, record: MigrationRecord) -> dict[str, list[Keyspace]]:
+        return target_map(record.plan.source, record.plan.destination_bucket, record.plan.containers)
+
+    def _all_target_keyspaces(self, record: MigrationRecord) -> set[str]:
+        return {ks.name for lst in self._target_map(record).values() for ks in lst}
+
+    def _target_buckets(self, record: MigrationRecord) -> list[str]:
+        """Buckets that included containers actually write to, primary first.
+        The plan's destination_bucket is only here if something targets it."""
+        return buckets_in(self._target_map(record)) or [record.plan.destination_bucket]
+
+    def _normalize_rollback_state(self, record: MigrationRecord) -> None:
+        """Records written before multi-bucket targets stored keyspaces as
+        scope.collection; qualify them with the plan's bucket once."""
+        rs = record.rollback_state
+        bucket = record.plan.destination_bucket
+        rs.preexisting_collections = sorted({qualify_keyspace(k, bucket) for k in rs.preexisting_collections})
+        rs.owned_collections = sorted({qualify_keyspace(k, bucket) for k in rs.owned_collections})
+        if rs.journal_keyspace:
+            rs.journal_keyspace = qualify_keyspace(rs.journal_keyspace, bucket)
+        if rs.bucket_created_by_migration and bucket not in rs.buckets_created_by_migration:
+            rs.buckets_created_by_migration.append(bucket)
 
     def _loader(self, record: MigrationRecord, client: CouchbaseClusterClient, *, journal: bool = True) -> CouchbaseLoader:
+        self._normalize_rollback_state(record)
         rs = record.rollback_state
         journal_keyspaces: set[str] = set()
         if journal and record.plan.journal_overwrites:
@@ -217,7 +252,7 @@ class MigrationEngine:
             else:
                 # Rollback state wasn't captured (record from an older version):
                 # journal every target, which is always safe.
-                journal_keyspaces = {f"{s}.{c}" for s, c in self._target_map(record).values()}
+                journal_keyspaces = self._all_target_keyspaces(record)
         return CouchbaseLoader(
             client, record.plan.destination_bucket, record.migration_id, self._target_map(record),
             concurrency=record.plan.concurrency, passthrough=is_couchbase_source(record),
@@ -288,28 +323,33 @@ class MigrationEngine:
         await self._emit(record)
         return record
 
-    def _ensure_destination_bucket(self, record: MigrationRecord) -> bool:
-        try:
-            if record.plan.destination.is_capella:
-                created = CapellaClient().ensure_bucket_exists(
-                    record.plan.destination, record.plan.destination_bucket,
-                    ram_quota_mb=record.plan.destination_bucket_ram_quota_mb,
-                )
-            else:
-                client = CouchbaseClusterClient(record.plan.destination)
-                try:
-                    created = client.ensure_bucket(
-                        record.plan.destination_bucket, ram_quota_mb=record.plan.destination_bucket_ram_quota_mb,
+    def _ensure_destination_buckets(self, record: MigrationRecord) -> list[str]:
+        """Provision every bucket any target names (plus the plan's default
+        bucket, which holds the rollback journal). Returns the ones created."""
+        created: list[str] = []
+        buckets = self._target_buckets(record)
+        if record.plan.destination_bucket not in buckets:
+            buckets = [*buckets, record.plan.destination_bucket]
+        for bucket in buckets:
+            try:
+                if record.plan.destination.is_capella:
+                    was_created = CapellaClient().ensure_bucket_exists(
+                        record.plan.destination, bucket, ram_quota_mb=record.plan.destination_bucket_ram_quota_mb,
                     )
-                finally:
-                    client.close()
-            if created:
-                self._log(record, f"Auto-provisioned destination bucket '{record.plan.destination_bucket}'.")
-                time.sleep(2)  # let the bucket warm up before scope/collection calls
-            return bool(created)
-        except Exception as exc:  # noqa: BLE001
-            self._log(record, f"Destination bucket auto-provisioning skipped: {exc}")
-            return False
+                else:
+                    client = CouchbaseClusterClient(record.plan.destination)
+                    try:
+                        was_created = client.ensure_bucket(bucket, ram_quota_mb=record.plan.destination_bucket_ram_quota_mb)
+                    finally:
+                        client.close()
+                if was_created:
+                    created.append(bucket)
+                    self._log(record, f"Auto-provisioned destination bucket '{bucket}'.")
+            except Exception as exc:  # noqa: BLE001
+                self._log(record, f"Destination bucket '{bucket}' auto-provisioning skipped: {exc}")
+        if created:
+            time.sleep(2)  # let the buckets warm up before scope/collection calls
+        return created
 
     async def _capture_rollback_state(self, record: MigrationRecord, client: CouchbaseClusterClient) -> None:
         """Record which destination collections existed before the first write,
@@ -321,7 +361,7 @@ class MigrationEngine:
         existing = await asyncio.to_thread(loader.existing_keyspaces)
         rs.preexisting_collections = sorted(existing)
         rs.captured = True
-        targets = {loader.keyspace_for(c) for c in self._included_containers(record)}
+        targets = loader.all_keyspaces()
         shared = sorted(targets & existing)
         if shared:
             self._log(
@@ -345,8 +385,12 @@ class MigrationEngine:
         if record.phase != MigrationPhase.APPROVED:
             raise ValueError("Migration must be approved before it can start.")
 
-        if await asyncio.to_thread(self._ensure_destination_bucket, record):
-            record.rollback_state.bucket_created_by_migration = True
+        created = await asyncio.to_thread(self._ensure_destination_buckets, record)
+        if created:
+            rs = record.rollback_state
+            rs.buckets_created_by_migration = sorted(set(rs.buckets_created_by_migration) | set(created))
+            if record.plan.destination_bucket in created:
+                rs.bucket_created_by_migration = True
 
         if uses_xdcr(record):
             return await self._run_couchbase_native_migration(record)
@@ -400,7 +444,7 @@ class MigrationEngine:
                 record.sync.bulk_copy_started_at = utcnow()
                 if passthrough:
                     await self._run_native_full_load(
-                        record, plan.source, plan.destination, plan.source.database or "", plan.destination_bucket,
+                        record, plan.source, plan.destination, plan.source.database or "", self._target_buckets(record),
                     )
                     if record.phase == MigrationPhase.FAILED:
                         return record
@@ -473,7 +517,8 @@ class MigrationEngine:
         finally:
             await source_connector.close()
         now = await asyncio.to_thread(loader.existing_keyspaces)
-        self._add_owned(record, {f"{s}.{c}" for s, c in pairs} & now)
+        restored = {f"{bucket}.{s}.{c}" for bucket in loader.buckets() for s, c in pairs}
+        self._add_owned(record, restored & now)
 
     async def _run_full_load(
         self, record: MigrationRecord, connector: SourceConnector, loader: CouchbaseLoader, containers: list[str],
@@ -770,6 +815,7 @@ class MigrationEngine:
         await self._emit(record)
         await self._verify(record, loader, containers, connector)
         record.cutover_at = utcnow()
+        record.cutover_history.append(record.cutover_at)
         record.phase = MigrationPhase.COMPLETE
         self._log(
             record,
@@ -869,10 +915,7 @@ class MigrationEngine:
         if uses_xdcr(record):
             # Only reattach to a replication that still exists; re-creating one on
             # the source cluster is left to an explicit Resume.
-            repl_id = record.checkpoint.get("_xdcr_replication_id")
-            alive = bool(repl_id) and bool(
-                await asyncio.to_thread(XdcrManager(record.plan.source).get_progress, repl_id)
-            )
+            alive = await self._xdcr_alive(record)
             if not alive:
                 record.phase = MigrationPhase.FAILED
                 record.stats.replication_active = False
@@ -935,23 +978,27 @@ class MigrationEngine:
         results: list[ContainerVerification] = []
         passthrough = loader.passthrough
         for container in containers:
-            target = loader.keyspace_for(container)
-            item = ContainerVerification(container=container, target=target)
-            try:
-                item.dest_count = await asyncio.to_thread(loader.count_migrated, container)
-            except Exception as exc:  # noqa: BLE001
-                item.note = f"destination count failed: {exc}"
+            source_count: int | None = None
+            source_note: str | None = None
             if connector is not None and settings.verify_source_counts:
                 try:
                     count = 0
                     async for _ in connector.list_keys(container):
                         count += 1
-                    item.source_count = count
+                    source_count = count
                 except Exception as exc:  # noqa: BLE001
-                    item.note = (item.note + "; " if item.note else "") + f"source count unavailable: {exc}"
-            if item.source_count is not None and item.dest_count is not None:
-                item.matched = item.source_count == item.dest_count
-            results.append(item)
+                    source_note = f"source count unavailable: {exc}"
+            for target in loader.keyspaces_for(container):
+                item = ContainerVerification(container=container, target=target, source_count=source_count)
+                try:
+                    item.dest_count = await asyncio.to_thread(loader.count_migrated_in, target)
+                except Exception as exc:  # noqa: BLE001
+                    item.note = f"destination count failed: {exc}"
+                if source_note:
+                    item.note = (item.note + "; " if item.note else "") + source_note
+                if item.source_count is not None and item.dest_count is not None:
+                    item.matched = item.source_count == item.dest_count
+                results.append(item)
 
         record.verification = results
         record.verified_at = utcnow()
@@ -986,6 +1033,12 @@ class MigrationEngine:
             warnings.append(f"Nothing to roll back in phase '{phase.value}'.")
 
         needs_confirmation = record.cutover_at is not None and phase != MigrationPhase.FELL_BACK
+        if record.cutover_at is None and record.cutover_history:
+            warnings.append(
+                f"This migration was cut over {len(record.cutover_history)} time(s) before and fell back. Documents "
+                "applications created in Couchbase while it was the system of record carry no migration tag, so "
+                "rollback leaves them in place."
+            )
         if needs_confirmation:
             warnings.insert(0, (
                 f"This migration was cut over at {record.cutover_at:%Y-%m-%d %H:%M} UTC. Rolling back removes "
@@ -993,8 +1046,9 @@ class MigrationEngine:
                 "need to move back to the source, use fallback sync instead."
             ))
 
+        self._normalize_rollback_state(record)
         native = is_couchbase_source(record)
-        targets = {f"{s}.{c}" for s, c in self._target_map(record).values()}
+        targets = self._all_target_keyspaces(record)
         owned = set(rs.owned_collections) if rs.captured else set()
         shared = sorted(targets - owned) if rs.captured else sorted(targets)
 
@@ -1040,16 +1094,18 @@ class MigrationEngine:
             )
         if rs.journal_keyspace and req.restore_overwritten:
             steps.append(f"Drop the rollback journal ({rs.journal_keyspace}).")
-        if rs.bucket_created_by_migration:
+        created_buckets = sorted(rs.buckets_created_by_migration)
+        if created_buckets:
+            names = ", ".join(f"'{b}'" for b in created_buckets)
             if req.drop_created_bucket and not record.plan.destination.is_capella:
-                steps.append(f"Drop bucket '{record.plan.destination_bucket}', which this migration created.")
+                steps.append(f"Drop bucket(s) {names}, which this migration created.")
             elif req.drop_created_bucket:
                 warnings.append(
-                    f"Bucket '{record.plan.destination_bucket}' was created in Capella by this migration; drop it "
-                    "from the Capella UI if you no longer need it."
+                    f"Bucket(s) {names} were created in Capella by this migration; drop them "
+                    "from the Capella UI if you no longer need them."
                 )
             else:
-                warnings.append(f"Bucket '{record.plan.destination_bucket}' was created by this migration and is kept.")
+                warnings.append(f"Bucket(s) {names} were created by this migration and are kept.")
         steps.append(
             "Source database: nothing to undo -- the forward migration never writes to it"
             + (" (XDCR setup is removed above)." if uses_xdcr(record) else ".")
@@ -1103,12 +1159,10 @@ class MigrationEngine:
             owned = set(rs.owned_collections) if rs.captured else set()
 
             if not native and req.purge_destination_data and "purge" not in done:
-                purge = [
-                    c for c in containers
-                    if loader.keyspace_for(c) not in owned or not req.drop_owned_collections
-                ]
+                keep = owned if req.drop_owned_collections else set()
+                purge = [c for c in containers if any(ks not in keep for ks in loader.keyspaces_for(c))]
                 if purge:
-                    deleted = await loader.purge_migration(purge)
+                    deleted = await loader.purge_migration(purge, keyspaces=loader.all_keyspaces() - keep)
                     summary.append(f"deleted {deleted:,} migrated document(s)")
                     self._log(record, f"Rollback: deleted {deleted:,} document(s) this migration wrote.")
                 _mark("purge")
@@ -1140,11 +1194,12 @@ class MigrationEngine:
                 _mark("drop_journal")
 
             if (
-                req.drop_created_bucket and rs.bucket_created_by_migration
+                req.drop_created_bucket and rs.buckets_created_by_migration
                 and not record.plan.destination.is_capella and "drop_bucket" not in done
             ):
-                await asyncio.to_thread(dest_client.drop_bucket, record.plan.destination_bucket)
-                summary.append(f"dropped bucket '{record.plan.destination_bucket}'")
+                for bucket in sorted(rs.buckets_created_by_migration):
+                    await asyncio.to_thread(dest_client.drop_bucket, bucket)
+                    summary.append(f"dropped bucket '{bucket}'")
                 _mark("drop_bucket")
 
             discard_state(str(record.migration_id))
@@ -1167,13 +1222,18 @@ class MigrationEngine:
         }, record.migration_id)
         return record
 
-    # -- post-cutover fallback -------------------------------------------------------
+    # -- post-cutover fallback (reverse sync) and failback -------------------------
 
     def _reverse_sync_supported(self, record: MigrationRecord) -> bool:
+        if ReverseXdcr.applicable(record):
+            return True
         try:
             return get_connector(record.plan.source).capabilities.reverse_sync
         except Exception:  # noqa: BLE001
             return False
+
+    def _uses_reverse_xdcr(self, record: MigrationRecord) -> bool:
+        return ReverseXdcr.applicable(record)
 
     def fallback_blocker(self, record: MigrationRecord) -> str | None:
         if record.phase != MigrationPhase.COMPLETE or record.cutover_at is None:
@@ -1189,12 +1249,18 @@ class MigrationEngine:
         record.phase = MigrationPhase.FALLBACK_SYNCING
         record.fallback.active = True
         record.fallback.last_error = None
-        self._log(record, "Starting fallback sync: recording destination keys, then writing Couchbase changes "
-                          "made since cutover back to the source...")
+        if self._uses_reverse_xdcr(record):
+            self._log(record, "Starting fallback sync: creating a reverse XDCR replication from the destination "
+                              "back to the source cluster...")
+        else:
+            self._log(record, "Starting fallback sync: recording destination keys, then writing Couchbase changes "
+                              "made since cutover back to the source...")
         await self._emit(record)
         return record
 
     async def run_fallback(self, record: MigrationRecord, *, fresh: bool) -> MigrationRecord:
+        if self._uses_reverse_xdcr(record):
+            return await self._run_reverse_xdcr(record, fresh=fresh)
         dest_client = CouchbaseClusterClient(record.plan.destination)
         connector = get_connector(record.plan.source)
         try:
@@ -1218,6 +1284,47 @@ class MigrationEngine:
             dest_client.close()
             await connector.close()
 
+    async def _run_reverse_xdcr(self, record: MigrationRecord, *, fresh: bool) -> MigrationRecord:
+        sync = ReverseXdcr(record, log=self._log, emit=self._emit)
+        try:
+            if fresh or not record.checkpoint.get("_reverse_xdcr_replication_id"):
+                await sync.start()
+                self._log(record, "Fallback sync running: XDCR keeps the source current with changes made in Couchbase.")
+                await self._emit(record)
+            return await sync.run()
+        except Exception as exc:  # noqa: BLE001
+            record.fallback.last_error = str(exc)
+            record.fallback.active = False
+            record.phase = MigrationPhase.COMPLETE
+            self._log(record, f"Reverse XDCR fallback couldn't start: {exc}")
+            await self._emit(record)
+            return record
+
+    async def _capture_forward_position(self, record: MigrationRecord, connector: SourceConnector | None) -> None:
+        """Record where forward sync must resume from if applications come back
+        to Couchbase later (failback). Done before the final drain, so a write
+        that lands at the source during the drain is replayed rather than lost
+        (idempotent, so the drain's own writes are harmless)."""
+        containers = self._included_containers(record)
+        if uses_xdcr(record):
+            # XDCR re-checks every document on resume; nothing to capture.
+            record.sync.capture_started_at = utcnow()
+            return
+        if connector is None or not connector.supports_cdc:
+            return
+        try:
+            positions = await connector.capture_change_position(containers)
+        except Exception as exc:  # noqa: BLE001
+            self._log(record, f"Could not record the source's change position for a later failback: {exc}")
+            return
+        for key in list(record.checkpoint):
+            if not key.startswith("_"):
+                record.checkpoint.pop(key)
+        record.checkpoint.update(positions)
+        record.sync.capture_started_at = utcnow()
+        record.sync.cdc_method = connector.capabilities.method
+        self._log(record, "Recorded the source's change position; 'Return to Couchbase' resumes forward sync from here.")
+
     async def stop_fallback(self, record: MigrationRecord, fall_back_to_source: bool) -> MigrationRecord:
         if record.phase != MigrationPhase.FALLBACK_SYNCING:
             raise ValueError("Fallback sync isn't running.")
@@ -1229,6 +1336,8 @@ class MigrationEngine:
             await asyncio.sleep(0.5)
 
         if not fall_back_to_source:
+            if self._uses_reverse_xdcr(record):
+                await ReverseXdcr(record, log=self._log, emit=self._emit).teardown()
             record.fallback.active = False
             record.fallback.stopped_at = utcnow()
             discard_state(str(record.migration_id))
@@ -1236,17 +1345,23 @@ class MigrationEngine:
             await self._emit(record)
             return record
 
+        # Reverse XDCR needs no source connector; every other fallback (including
+        # an Enterprise source with a Capella destination) writes through one.
+        connector = None if self._uses_reverse_xdcr(record) else get_connector(record.plan.source)
         dest_client = CouchbaseClusterClient(record.plan.destination)
-        connector = get_connector(record.plan.source)
         try:
-            loader = self._loader(record, dest_client, journal=False)
-            sync = FallbackSync(
-                record, connector, loader, self._included_containers(record), log=self._log, emit=self._emit,
-            )
-            try:
-                await sync.final_drain()
-            finally:
-                sync.known.close()
+            await self._capture_forward_position(record, connector)
+            if self._uses_reverse_xdcr(record):
+                await ReverseXdcr(record, log=self._log, emit=self._emit).final_drain()
+            else:
+                loader = self._loader(record, dest_client, journal=False)
+                sync = FallbackSync(
+                    record, connector, loader, self._included_containers(record), log=self._log, emit=self._emit,
+                )
+                try:
+                    await sync.final_drain()
+                finally:
+                    sync.known.close()
         except Exception as exc:  # noqa: BLE001
             record.phase = MigrationPhase.FALLBACK_SYNCING
             record.fallback.last_error = str(exc)
@@ -1255,17 +1370,58 @@ class MigrationEngine:
             raise ValueError(f"Final drain failed: {exc}") from exc
         finally:
             dest_client.close()
-            await connector.close()
+            if connector is not None:
+                await connector.close()
 
         record.phase = MigrationPhase.FELL_BACK
         record.fallback.active = False
         record.fallback.stopped_at = utcnow()
         discard_state(str(record.migration_id))
         self._log(record, "Fell back: the source is the system of record again and has every change made in "
-                          "Couchbase since cutover. Point applications back at the source.")
+                          "Couchbase since cutover. Point applications back at the source."
+                          + (" Use 'Return to Couchbase' to resume forward sync from this point later."
+                             if record.plan.strategy in CONTINUOUS_STRATEGIES else ""))
         await self._emit(record)
         await self._remember("fell_back_to_source", {"migration_name": record.plan.name}, record.migration_id)
         return record
+
+    def failback_blocker(self, record: MigrationRecord) -> str | None:
+        """Why forward sync can't be resumed after falling back, or None."""
+        if record.phase != MigrationPhase.FELL_BACK:
+            return "Failback is available after applications have fallen back to the source."
+        if record.plan.strategy not in CONTINUOUS_STRATEGIES:
+            return "Only continuous migrations can resume forward sync; start a one-time migration again instead."
+        if not uses_xdcr(record) and record.sync.capture_started_at is None:
+            return "No change position was recorded when this migration fell back, so forward sync can't resume without a new migration."
+        return None
+
+    async def failback(self, record: MigrationRecord) -> MigrationRecord:
+        """Return to Couchbase: resume forward sync from the position captured
+        when applications fell back to the source. Couchbase catches up on what
+        was written to the source meanwhile; a new cutover finishes the round
+        trip. Applications must keep writing to the source until that cutover."""
+        blocker = self.failback_blocker(record)
+        if blocker:
+            raise ValueError(blocker)
+        record.failbacks += 1
+        record.cutover_at = None
+        record.error_message = None
+        record.fallback.active = False
+        record.verification = []
+        record.verified_at = None
+        record.sync.stage = SyncStage.CATCH_UP
+        record.sync.drain_requested_at = None
+        record.sync.caught_up_at = None
+        record.stats.replication_active = True
+        self._log(record, f"Failback #{record.failbacks}: resuming forward sync from the position recorded when "
+                          "applications fell back. Couchbase is catching up on changes made at the source since then.")
+        if uses_xdcr(record):
+            record.phase = MigrationPhase.REPLICATING
+            await self._emit(record)
+            return await self._resume_xdcr(record)
+        record.phase = MigrationPhase.REPLICATING
+        await self._emit(record)
+        return await self._run_pipeline(record)
 
     # -- XDCR lifecycle (Enterprise Edition sources) ------------------------------------
 
@@ -1285,6 +1441,7 @@ class MigrationEngine:
             await self._emit(record)
             await self._verify_native(record)
             record.cutover_at = utcnow()
+            record.cutover_history.append(record.cutover_at)
             record.phase = MigrationPhase.COMPLETE
             self._log(record, "Cutover complete. Couchbase is now the system of record.")
         else:
@@ -1293,18 +1450,33 @@ class MigrationEngine:
         await self._emit(record)
         return record
 
+    def _xdcr_replication_ids(self, record: MigrationRecord) -> list[str]:
+        ids = list(record.checkpoint.get("_xdcr_replication_ids") or [])
+        single = record.checkpoint.get("_xdcr_replication_id")
+        if single and single not in ids:
+            ids.insert(0, single)
+        return ids
+
+    async def _xdcr_alive(self, record: MigrationRecord) -> bool:
+        ids = self._xdcr_replication_ids(record)
+        if not ids:
+            return False
+        xdcr = XdcrManager(record.plan.source)
+        for repl_id in ids:
+            if not await asyncio.to_thread(xdcr.get_progress, repl_id):
+                return False
+        return True
+
     async def _resume_xdcr(self, record: MigrationRecord) -> MigrationRecord:
         source = record.plan.source
-        repl_id = record.checkpoint.get("_xdcr_replication_id")
-        alive = False
-        if repl_id:
-            alive = bool(await asyncio.to_thread(XdcrManager(source).get_progress, repl_id))
+        alive = await self._xdcr_alive(record)
         try:
             if not alive:
                 self._log(record, "Re-creating the XDCR replication (XDCR re-checks every document and only "
                                   "sends what the destination is missing)...")
+                await asyncio.to_thread(self._teardown_xdcr, record)
                 await self._start_xdcr(record, source, record.plan.destination, source.database or "",
-                                       record.plan.destination_bucket)
+                                       self._target_buckets(record))
         except Exception as exc:  # noqa: BLE001
             record.phase = MigrationPhase.FAILED
             record.error_message = f"Could not resume XDCR: {exc}"
@@ -1333,24 +1505,29 @@ class MigrationEngine:
         source = record.plan.source
         dest = record.plan.destination
         source_bucket = source.database or ""
-        dest_bucket = record.plan.destination_bucket
+        dest_buckets = self._target_buckets(record)
 
         excluded = [c.container_name for c in record.plan.containers if not c.include]
         remapped = [
             c.container_name for c in record.plan.containers
-            if c.include and (c.target_scope_name or c.target_collection_name)
+            if c.include and any(t.scope or t.collection for t in c.resolved_targets())
         ]
-        if excluded or remapped:
+        if excluded or remapped or len(dest_buckets) > 1:
             parts = []
             if excluded:
                 parts.append(
-                    f"excluded container(s) {excluded} will still be included -- cbbackupmgr backs up/"
-                    "restores the whole bucket, not individual collections"
+                    f"excluded container(s) {excluded} will still be included -- cbbackupmgr/XDCR move "
+                    "the whole bucket, not individual collections"
                 )
             if remapped:
                 parts.append(
                     f"custom target scope/collection names for {remapped} won't be applied -- cbbackupmgr "
-                    "restores the source bucket's own scope.collection structure as-is"
+                    "and XDCR keep the source bucket's own scope.collection structure as-is"
+                )
+            if len(dest_buckets) > 1:
+                parts.append(
+                    f"the whole source bucket is copied/replicated into each of the {len(dest_buckets)} target "
+                    f"buckets ({', '.join(dest_buckets)})"
                 )
             self._log(record, "Note: " + "; ".join(parts) + ".")
 
@@ -1360,7 +1537,7 @@ class MigrationEngine:
                 await self._capture_rollback_state(record, capture_client)
                 if record.plan.strategy in (MigrationStrategy.FULL_LOAD, MigrationStrategy.FULL_LOAD_AND_CDC):
                     record.sync.bulk_copy_started_at = utcnow()
-                    await self._run_native_full_load(record, source, dest, source_bucket, dest_bucket)
+                    await self._run_native_full_load(record, source, dest, source_bucket, dest_buckets)
                     if record.phase == MigrationPhase.FAILED:
                         return record
                     await self._record_native_owned(record, self._loader(record, capture_client, journal=False))
@@ -1372,7 +1549,7 @@ class MigrationEngine:
                 return record
             is_continuous = record.plan.strategy in CONTINUOUS_STRATEGIES
             if is_continuous:
-                await self._start_xdcr(record, source, dest, source_bucket, dest_bucket)
+                await self._start_xdcr(record, source, dest, source_bucket, dest_buckets)
                 record.phase = MigrationPhase.REPLICATING
                 record.stats.replication_active = True
                 record.sync.stage = SyncStage.STREAMING
@@ -1396,7 +1573,9 @@ class MigrationEngine:
             await self._emit(record)
             return record
 
-    async def _run_native_full_load(self, record: MigrationRecord, source, dest, source_bucket: str, dest_bucket: str) -> None:
+    async def _run_native_full_load(
+        self, record: MigrationRecord, source, dest, source_bucket: str, dest_buckets: list[str],
+    ) -> None:
         record.phase = MigrationPhase.MIGRATING
         self._log(record, f"Starting full load of bucket '{source_bucket}' via cbbackupmgr...")
         await self._emit(record)
@@ -1465,8 +1644,11 @@ class MigrationEngine:
         try:
             self._log(record, f"Backing up '{source_bucket}' from the source cluster...")
             await runner.backup(source, archive_dir, repo)
-            self._log(record, f"Restoring into destination bucket '{dest_bucket}'...")
-            await runner.restore(dest, archive_dir, repo, source_bucket, dest_bucket, collection_pairs=collection_pairs)
+            for dest_bucket in dest_buckets:
+                self._log(record, f"Restoring into destination bucket '{dest_bucket}'...")
+                await runner.restore(
+                    dest, archive_dir, repo, source_bucket, dest_bucket, collection_pairs=collection_pairs,
+                )
         except CouchbaseNativeError as exc:
             record.phase = MigrationPhase.FAILED
             record.error_message = str(exc)
@@ -1475,7 +1657,7 @@ class MigrationEngine:
             return
 
         record.stats.elapsed_seconds = time.monotonic() - start
-        item_count = await asyncio.to_thread(self._dest_bucket_item_count, dest, dest_bucket)
+        item_count = await asyncio.to_thread(self._dest_bucket_item_count, dest, dest_buckets[0])
         if item_count is not None:
             record.stats.docs_migrated = item_count
             record.stats.throughput_docs_per_sec = (
@@ -1485,7 +1667,8 @@ class MigrationEngine:
         self._log(
             record,
             f"Full load complete via cbbackupmgr ({record.stats.docs_migrated} document(s) in destination "
-            f"bucket '{dest_bucket}').",
+            f"bucket '{dest_buckets[0]}'" + (f", restored into {len(dest_buckets)} buckets" if len(dest_buckets) > 1 else "")
+            + ").",
         )
         await self._emit(record)
 
@@ -1500,11 +1683,25 @@ class MigrationEngine:
         match = next((b for b in buckets if b.get("name") == bucket_name), None)
         return (match or {}).get("basicStats", {}).get("itemCount")
 
-    async def _start_xdcr(self, record: MigrationRecord, source, dest, source_bucket: str, dest_bucket: str) -> None:
+    async def _start_xdcr(
+        self, record: MigrationRecord, source, dest, source_bucket: str, dest_buckets: list[str],
+    ) -> None:
+        """One XDCR replication per target bucket (XDCR replicates a source
+        bucket to any number of destination buckets independently)."""
         self._log(record, "Configuring XDCR for continuous replication...")
         xdcr = XdcrManager(source)
         ref_name = self._xdcr_ref_name(record)
         await asyncio.to_thread(xdcr.create_remote_cluster_ref, dest, ref_name)
+        record.checkpoint["_xdcr_ref_name"] = ref_name
+        ids: list[str] = []
+        for dest_bucket in dest_buckets:
+            ids.append(await self._create_xdcr_replication(record, xdcr, source_bucket, ref_name, dest_bucket))
+        record.checkpoint["_xdcr_replication_id"] = ids[0]
+        record.checkpoint["_xdcr_replication_ids"] = ids
+
+    async def _create_xdcr_replication(
+        self, record: MigrationRecord, xdcr: XdcrManager, source_bucket: str, ref_name: str, dest_bucket: str,
+    ) -> str:
 
         # ns_server can return 200 from POST /pools/default/remoteClusters before the
         # new reference is actually visible to createReplication's lookup -- confirmed
@@ -1530,21 +1727,23 @@ class MigrationEngine:
                 )
                 await asyncio.sleep(2.0)
         assert repl_id is not None
-        record.checkpoint["_xdcr_ref_name"] = ref_name
-        record.checkpoint["_xdcr_replication_id"] = repl_id
         self._log(record, f"XDCR replication started ('{source_bucket}' -> '{dest_bucket}').")
+        return repl_id
 
     def _teardown_xdcr(self, record: MigrationRecord) -> None:
-        repl_id = record.checkpoint.get("_xdcr_replication_id")
+        repl_ids = self._xdcr_replication_ids(record)
         ref_name = record.checkpoint.get("_xdcr_ref_name")
-        if not repl_id and not ref_name:
+        if not repl_ids and not ref_name:
             return
         xdcr = XdcrManager(record.plan.source)
         try:
-            if repl_id:
+            for repl_id in repl_ids:
                 xdcr.remove_replication(repl_id)
             if ref_name:
                 xdcr.remove_remote_cluster_ref(ref_name)
+            record.checkpoint.pop("_xdcr_replication_id", None)
+            record.checkpoint.pop("_xdcr_replication_ids", None)
+            record.checkpoint.pop("_xdcr_ref_name", None)
             self._log(record, "XDCR replication removed from the source cluster.")
         except Exception as exc:  # noqa: BLE001
             self._log(
@@ -1555,7 +1754,7 @@ class MigrationEngine:
 
     async def _monitor_xdcr(self, record: MigrationRecord) -> MigrationRecord:
         xdcr = XdcrManager(record.plan.source)
-        repl_id = record.checkpoint.get("_xdcr_replication_id")
+        repl_ids = self._xdcr_replication_ids(record)
         start = time.monotonic()
         last_emit = 0.0
 
@@ -1565,16 +1764,24 @@ class MigrationEngine:
                 return fresh or record
             record = fresh
 
-            if repl_id:
-                task = await asyncio.to_thread(xdcr.get_progress, repl_id)
-                changes_left = task.get("changesLeft")
-                if changes_left is not None:
-                    record.stats.changes_left = changes_left
-                docs_checked = task.get("docsChecked")
-                if docs_checked is not None:
-                    record.stats.mutations_replicated = docs_checked
+            if repl_ids:
+                changes_left_total = 0
+                docs_total = 0
+                saw_left = saw_docs = False
+                for repl_id in repl_ids:
+                    task = await asyncio.to_thread(xdcr.get_progress, repl_id)
+                    if task.get("changesLeft") is not None:
+                        saw_left = True
+                        changes_left_total += int(task["changesLeft"])
+                    if task.get("docsChecked") is not None:
+                        saw_docs = True
+                        docs_total += int(task["docsChecked"])
+                if saw_left:
+                    record.stats.changes_left = changes_left_total
+                if saw_docs:
+                    record.stats.mutations_replicated = docs_total
                     elapsed = max(time.monotonic() - start, 0.001)
-                    record.stats.mutations_per_sec = docs_checked / elapsed
+                    record.stats.mutations_per_sec = docs_total / elapsed
                 record.stats.last_replication_poll = utcnow()
 
             now = time.monotonic()
@@ -1588,15 +1795,14 @@ class MigrationEngine:
         """Coarser than _verify(): cbbackupmgr/XDCR don't tag documents with a
         migration ID, so this compares whole-bucket item counts rather than a
         count scoped to just what this migration wrote."""
-        dest_count = await asyncio.to_thread(
-            self._dest_bucket_item_count, record.plan.destination, record.plan.destination_bucket,
-        )
-        self._log(
-            record,
-            f"Verification: destination bucket '{record.plan.destination_bucket}' item count = "
-            f"{dest_count if dest_count is not None else 'unknown'}. cbbackupmgr/XDCR don't tag documents, "
-            "so this is a whole-bucket count rather than a count scoped to just this migration.",
-        )
+        for bucket in self._target_buckets(record):
+            dest_count = await asyncio.to_thread(self._dest_bucket_item_count, record.plan.destination, bucket)
+            self._log(
+                record,
+                f"Verification: destination bucket '{bucket}' item count = "
+                f"{dest_count if dest_count is not None else 'unknown'}. cbbackupmgr/XDCR don't tag documents, "
+                "so this is a whole-bucket count rather than a count scoped to just this migration.",
+            )
 
 
 def _short_list(items: list[str], limit: int = 5) -> str:

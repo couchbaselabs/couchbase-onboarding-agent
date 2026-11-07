@@ -9,6 +9,7 @@ import CouchbaseConfigForm from "@/components/wizard/CouchbaseConfigForm";
 import ReplicationModeSelector from "@/components/wizard/ReplicationModeSelector";
 import ValidationResults from "@/components/validation/ValidationResults";
 import CdcCapabilities from "@/components/wizard/CdcCapabilities";
+import TargetMappingEditor from "@/components/wizard/TargetMappingEditor";
 import type { MigrationStrategy, ReplicationModeRecommendationResponse, ValidationReport } from "@/api/types";
 import { SOURCE_TYPE_LABELS } from "@/theme/tokens";
 
@@ -117,6 +118,13 @@ export default function NewMigrationPage() {
   }
 
   const cdcDisabled: MigrationStrategy[] = wizard.sourceTopology?.supports_cdc ? [] : ["cdc_live", "full_load_and_cdc"];
+  const isCouchbaseSource = ["couchbase", "couchbase_enterprise", "couchbase_capella"].includes(wizard.source.source_type);
+  const includedContainers = wizard.containers.filter((c) => c.include);
+  const targetBuckets = Array.from(new Set([
+    wizard.destinationBucket,
+    ...includedContainers.flatMap((c) => (c.targets ?? []).map((t) => t.bucket || wizard.destinationBucket)),
+  ].filter(Boolean)));
+  const extraTargets = includedContainers.reduce((n, c) => n + Math.max((c.targets?.length ?? 1) - 1, 0), 0);
 
   return (
     <div className="page-narrow">
@@ -255,18 +263,20 @@ export default function NewMigrationPage() {
 
           {wizard.sourceTopology && (
             <div className="card">
-              <h3 className="card-title">Containers to migrate</h3>
-              <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 260, overflowY: "auto" }} className="cb-scrollbar">
-                {wizard.containers.map((c) => (
-                  <label key={c.container_name} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12.5 }}>
-                    <input type="checkbox" checked={c.include} onChange={() => wizard.toggleContainer(c.container_name)} />
-                    <span style={{ fontWeight: 600 }}>{c.container_name}</span>
-                    <span style={{ color: "var(--text-faint)", marginLeft: "auto" }}>
-                      {wizard.sourceTopology?.containers.find((sc) => sc.name === c.container_name)?.estimated_count?.toLocaleString() ?? "?"} docs
-                    </span>
-                  </label>
-                ))}
+              <h3 className="card-title">Containers to migrate &amp; where they land</h3>
+              <div className="muted" style={{ marginBottom: 10 }}>
+                Each container is written to one or more <code>bucket.scope.collection</code> targets. Leave a field blank to
+                use the default (the destination bucket above; a scope named after the source database, or{" "}
+                <code>_default</code>; a collection named after the container). Add a target to keep a second copy in
+                another bucket, scope or collection. Buckets that don't exist yet are created when the migration starts.
               </div>
+              <TargetMappingEditor
+                containers={wizard.containers}
+                topology={wizard.sourceTopology}
+                defaultBucket={wizard.destinationBucket}
+                knownBuckets={wizard.destTopology?.buckets ?? []}
+                isCouchbaseSource={isCouchbaseSource}
+              />
             </div>
           )}
 
@@ -373,7 +383,7 @@ export default function NewMigrationPage() {
               <tbody>
             <SummaryRow label="Name" value={wizard.name} />
             <SummaryRow label="Source" value={`${wizard.source.label} (${SOURCE_TYPE_LABELS[wizard.source.source_type] ?? wizard.source.source_type})`} />
-            <SummaryRow label="Destination bucket" value={`${wizard.destination.label} / ${wizard.destinationBucket}`} />
+            <SummaryRow label="Destination" value={`${wizard.destination.label} / ${targetBuckets.join(", ")}`} />
             <SummaryRow label="Replication mode" value={MODE_LABELS[wizard.strategy]} />
             {wizard.strategy !== "full_load" && (
               <SummaryRow
@@ -382,7 +392,10 @@ export default function NewMigrationPage() {
               />
             )}
             <SummaryRow label="Overwrite journal" value={wizard.journalOverwrites ? "on" : "off"} />
-            <SummaryRow label="Containers" value={`${wizard.containers.filter((c) => c.include).length} included`} />
+            <SummaryRow
+              label="Containers"
+              value={`${includedContainers.length} included${extraTargets ? ` · ${extraTargets} extra target copy(ies)` : ""}`}
+            />
               </tbody>
             </table>
           </div>

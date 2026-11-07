@@ -5,8 +5,8 @@ description: >-
   Cosmos DB or another Couchbase cluster into Couchbase Server or Capella with
   bulk copy, continuous sync, rollback and post-cutover fallback.
 type: application
-version: 0.1.0
-appVersion: "1.1.0"
+version: 1.0.0
+appVersion: "1.0.0"
 home: https://github.com/couchbaselabs/couchbase-onboarding-agent
 sources:
   - https://github.com/couchbaselabs/couchbase-onboarding-agent

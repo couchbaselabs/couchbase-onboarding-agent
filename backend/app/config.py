@@ -8,14 +8,27 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_prefix="", extra="ignore")
 
     # --- App ---
-    app_name: str = "Couchbase Onboarding Agent"
+    app_name: str = "Couchbase Labs Onboarding Agent"
     environment: str = "development"
     log_level: str = "INFO"
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000"
 
     @property
     def cors_origin_list(self) -> list[str]:
+        """Allowed cross-origin callers. The default is the Vite dev server's
+        origins and applies only in development; everywhere else the UI is
+        served same-origin (nginx proxies /api and /ws), so the list is empty
+        unless CORS_ORIGINS is set explicitly."""
+        default = type(self).model_fields["cors_origins"].default
+        if self.environment != "development" and self.cors_origins == default:
+            return []
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def api_docs_enabled(self) -> bool:
+        if self.enable_api_docs is not None:
+            return self.enable_api_docs
+        return self.environment == "development"
 
     # --- Security ---
     # When set, every /api and /ws request must present this token (Authorization:
@@ -23,6 +36,18 @@ class Settings(BaseSettings):
     # single-user run bound to 127.0.0.1 -- the API can read production credentials
     # and delete destination data.
     api_auth_token: str = ""
+    # Brute-force throttling for the token check (per source IP): this many
+    # failures inside the window locks the IP out for auth_lockout_s.
+    auth_max_failures: int = 10
+    auth_failure_window_s: int = 15 * 60
+    auth_lockout_s: int = 30 * 60
+    # Read the client IP from X-Forwarded-For (first hop). On by default because
+    # the bundled nginx / Helm ingress always sits in front of the API; turn off
+    # when the API is exposed directly, so a client can't spoof its own IP.
+    trust_x_forwarded_for: bool = True
+    # Interactive API docs (/docs, /redoc, /openapi.json). Served unauthenticated,
+    # so off by default outside development.
+    enable_api_docs: bool | None = None
     # Fernet key (urlsafe base64, 32 bytes) used to encrypt credentials in the
     # state file. If empty, one is generated next to the state file on first start
     # (fine for a single container; set it explicitly -- e.g. from a Kubernetes

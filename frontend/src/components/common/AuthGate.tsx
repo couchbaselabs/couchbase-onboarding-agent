@@ -46,7 +46,7 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
         <div className="login-brand">
           <BrandMark />
           <div className="login-brand-name">
-            Couchbase
+            Couchbase Labs
             <br />
             Onboarding Agent
           </div>

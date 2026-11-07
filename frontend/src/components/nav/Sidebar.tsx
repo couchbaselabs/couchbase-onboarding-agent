@@ -27,7 +27,7 @@ export default function Sidebar() {
       <div className="brand">
         <BrandMark />
         <div className="brand-name">
-          Couchbase
+          Couchbase Labs
           <br />
           Onboarding Agent
         </div>

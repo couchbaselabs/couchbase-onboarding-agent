@@ -39,6 +39,8 @@ from app.config import get_settings
 from app.core.connectors.base import (
     CdcCapabilities,
     ChangeEvent,
+    ReverseBatchResult,
+    ReverseOp,
     SourceConnector,
     SourceConnectorError,
     SourceDocument,
@@ -510,18 +512,68 @@ class DynamoDBConnector(SourceConnector):
     ) -> None:
         client = self._client()
         attrs = await asyncio.to_thread(self._key_attrs, client, container)
-        if op == "delete":
-            ident = dict(source_key or {})
+        request = self._reverse_request(container, attrs, ReverseOp(op=op, key=key, body=body, source_key=source_key, types=types))
+        if "DeleteRequest" in request:
+            await asyncio.to_thread(client.delete_item, TableName=container, Key=request["DeleteRequest"]["Key"])
+            return
+        await asyncio.to_thread(client.put_item, TableName=container, Item=request["PutRequest"]["Item"])
+
+    @staticmethod
+    def _reverse_request(container: str, attrs: list[str], op: ReverseOp) -> dict[str, Any]:
+        if op.op == "delete":
+            ident = dict(op.source_key or {})
             if not ident:
                 raise SourceConnectorError(
-                    f"Can't delete '{key}' from DynamoDB table '{container}': its key attributes are unknown."
+                    f"Can't delete '{op.key}' from DynamoDB table '{container}': its key attributes are unknown."
                 )
             item_key = {a: _serializer.serialize(_to_dynamo_value(ident[a])) for a in attrs if a in ident}
-            await asyncio.to_thread(client.delete_item, TableName=container, Key=item_key)
-            return
-        doc = apply_type_hints(dict(body or {}), types, _from_hint)
+            return {"DeleteRequest": {"Key": item_key}}
+        doc = apply_type_hints(dict(op.body or {}), op.types, _from_hint)
         item = {k: _serializer.serialize(_to_dynamo_value(v)) for k, v in doc.items() if v is not None}
-        await asyncio.to_thread(client.put_item, TableName=container, Item=item)
+        return {"PutRequest": {"Item": item}}
+
+    async def apply_reverse_batch(self, container: str, ops: list[ReverseOp]) -> ReverseBatchResult:
+        """BatchWriteItem, 25 requests per call (the API maximum), with
+        UnprocessedItems retried with backoff -- the throttling-friendly way to
+        write to DynamoDB in bulk."""
+        result = ReverseBatchResult()
+        if not ops:
+            return result
+        client = self._client()
+        attrs = await asyncio.to_thread(self._key_attrs, client, container)
+        requests: list[tuple[ReverseOp, dict[str, Any]]] = []
+        for op in ops:
+            try:
+                requests.append((op, self._reverse_request(container, attrs, op)))
+            except Exception as exc:  # noqa: BLE001
+                result.failed.append((op.key, str(exc)))
+
+        def _write(chunk: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            pending = chunk
+            delay = 0.2
+            for _ in range(8):
+                resp = client.batch_write_item(RequestItems={container: pending})
+                pending = (resp.get("UnprocessedItems") or {}).get(container) or []
+                if not pending:
+                    return []
+                time.sleep(delay)
+                delay = min(delay * 2, 5.0)
+            return pending
+
+        for i in range(0, len(requests), 25):
+            chunk = requests[i:i + 25]
+            try:
+                unprocessed = await asyncio.to_thread(_write, [r for _, r in chunk])
+            except (ClientError, BotoCoreError) as exc:
+                result.failed.extend((op.key, str(exc)) for op, _ in chunk)
+                continue
+            if unprocessed:
+                # Can't tell which op an unprocessed request came from by identity
+                # after serialization; fail the whole chunk so the caller retries it.
+                result.failed.extend((op.key, "unprocessed after retries (throttled)") for op, _ in chunk)
+            else:
+                result.applied += len(chunk)
+        return result
 
 
 def _describe_all_shards(streams, stream_arn: str) -> list[dict[str, Any]]:

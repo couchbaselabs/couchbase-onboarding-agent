@@ -16,6 +16,19 @@ Forward migration (source -> Couchbase) is read-only against the source:
 Post-cutover fallback (Couchbase -> source) is the one path that writes to the
 source, and only when an operator starts it explicitly:
   - apply_reverse()            upsert or delete one document at the source
+  - apply_reverse_batch()      the same for a batch, using the source's native
+                               bulk API (Mongo bulk_write, DynamoDB
+                               BatchWriteItem, Redis pipelines, Cassandra
+                               concurrent execution, Cosmos concurrent upserts,
+                               Couchbase *_multi). The default runs
+                               apply_reverse() concurrently; connectors override
+                               it with something cheaper.
+
+Bi-directional operation: forward sync runs until cutover, fallback sync runs
+after it, and "failback" (MigrationEngine.failback) resumes forward sync from a
+position captured at the moment applications fell back to the source -- so the
+two directions never run at once (they would echo each other's writes), but a
+migration can move between them as many times as needed.
 
 Change events are applied after the bulk copy finishes, in source order per key,
 and every write is an idempotent upsert/delete keyed deterministically -- so
@@ -26,6 +39,7 @@ start position rather than an exactly-once one.
 from __future__ import annotations
 
 import abc
+import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -68,6 +82,27 @@ class ChangeEvent:
     # the replication-lag figure in the UI.
     source_ts: datetime | None = None
     extra: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ReverseOp:
+    """One change to write back to the source (see apply_reverse())."""
+
+    op: str  # "upsert" | "delete"
+    key: str
+    body: dict[str, Any] | None = None
+    source_key: dict[str, Any] | None = None
+    types: dict[str, str] | None = None
+
+
+@dataclass
+class ReverseBatchResult:
+    applied: int = 0
+    failed: list[tuple[str, str]] = field(default_factory=list)  # (key, error)
+
+
+# Concurrency for the default (per-document) apply_reverse_batch().
+REVERSE_DEFAULT_CONCURRENCY = 16
 
 
 @dataclass(frozen=True)
@@ -169,6 +204,28 @@ class SourceConnector(abc.ABC):
         written by the migration, and are None for documents applications created
         after cutover -- connectors derive the identity from `key`/`body` then."""
         raise SourceConnectorError(f"{type(self).__name__} does not support writing back to the source.")
+
+    async def apply_reverse_batch(self, container: str, ops: list[ReverseOp]) -> ReverseBatchResult:
+        """Write a batch of changes back to the source. Ops are already coalesced
+        per key (one op per key, the latest wins) by the caller. Must be
+        idempotent and may be partially applied: the caller retries failed keys
+        and only advances its watermark past a fully applied batch.
+
+        Default: apply_reverse() for each op, REVERSE_DEFAULT_CONCURRENCY at a
+        time. Connectors with a bulk API override this."""
+        result = ReverseBatchResult()
+        sem = asyncio.Semaphore(REVERSE_DEFAULT_CONCURRENCY)
+
+        async def _one(op: ReverseOp) -> None:
+            async with sem:
+                try:
+                    await self.apply_reverse(container, op.op, op.key, op.body, op.source_key, op.types)
+                    result.applied += 1
+                except Exception as exc:  # noqa: BLE001
+                    result.failed.append((op.key, str(exc)))
+
+        await asyncio.gather(*(_one(op) for op in ops))
+        return result
 
     async def close(self) -> None:
         """Release any pooled connections/clients. Safe to call multiple times."""

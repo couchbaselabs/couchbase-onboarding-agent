@@ -32,12 +32,14 @@ from typing import Any
 
 from bson import Binary, ObjectId, Timestamp
 from bson.decimal128 import Decimal128
-from pymongo import MongoClient
-from pymongo.errors import PyMongoError
+from pymongo import DeleteOne, MongoClient, ReplaceOne
+from pymongo.errors import BulkWriteError, PyMongoError
 
 from app.core.connectors.base import (
     CdcCapabilities,
     ChangeEvent,
+    ReverseBatchResult,
+    ReverseOp,
     SourceConnector,
     SourceConnectorError,
     SourceDocument,
@@ -430,12 +432,8 @@ class MongoDBConnector(SourceConnector):
         source_key: dict[str, Any] | None,
         types: dict[str, str] | None = None,
     ) -> None:
-        raw_id: Any = (source_key or {}).get("_id")
-        if raw_id is None and body is not None:
-            raw_id = body.get("_id")
-        if raw_id is None:
-            raw_id = key.split("::", 1)[1] if "::" in key else key
-        id_value = _from_hint(raw_id, types["/_id"]) if types and types.get("/_id") else raw_id
+        rop = ReverseOp(op=op, key=key, body=body, source_key=source_key, types=types)
+        id_value = self._reverse_id(rop)
         coll = self._db()[container]
         if op == "delete":
             await asyncio.to_thread(coll.delete_one, {"_id": id_value})
@@ -443,3 +441,41 @@ class MongoDBConnector(SourceConnector):
         doc = apply_type_hints(dict(body or {}), types, _from_hint)
         doc["_id"] = id_value
         await asyncio.to_thread(coll.replace_one, {"_id": id_value}, doc, True)
+
+    @staticmethod
+    def _reverse_id(op: ReverseOp) -> Any:
+        raw_id: Any = (op.source_key or {}).get("_id")
+        if raw_id is None and op.body is not None:
+            raw_id = op.body.get("_id")
+        if raw_id is None:
+            raw_id = op.key.split("::", 1)[1] if "::" in op.key else op.key
+        return _from_hint(raw_id, op.types["/_id"]) if op.types and op.types.get("/_id") else raw_id
+
+    def _reverse_request(self, op: ReverseOp):
+        id_value = self._reverse_id(op)
+        if op.op == "delete":
+            return DeleteOne({"_id": id_value})
+        doc = apply_type_hints(dict(op.body or {}), op.types, _from_hint)
+        doc["_id"] = id_value
+        return ReplaceOne({"_id": id_value}, doc, upsert=True)
+
+    async def apply_reverse_batch(self, container: str, ops: list[ReverseOp]) -> ReverseBatchResult:
+        """One unordered bulk_write per batch: a single round trip to the
+        replica set instead of one per document."""
+        result = ReverseBatchResult()
+        if not ops:
+            return result
+        requests = [self._reverse_request(op) for op in ops]
+        coll = self._db()[container]
+        try:
+            await asyncio.to_thread(coll.bulk_write, requests, False)
+            result.applied = len(ops)
+        except BulkWriteError as exc:
+            failed_idx = {int(e.get("index", -1)): e.get("errmsg", "bulk write error")
+                          for e in exc.details.get("writeErrors", [])}
+            for i, op in enumerate(ops):
+                if i in failed_idx:
+                    result.failed.append((op.key, str(failed_idx[i])))
+                else:
+                    result.applied += 1
+        return result

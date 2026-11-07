@@ -84,8 +84,15 @@ export function wsUrl(path: string): string {
   if (explicit) base = explicit;
   else if (BASE) base = BASE.replace(/^http/, "ws");
   else base = `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}`;
+  return `${base}${path}`;
+}
+
+/** The API token travels as a websocket subprotocol ("coa-auth", <token>) --
+ * a header, not a query string -- so it never lands in a URL, a browser
+ * history entry or a proxy access log. */
+export function wsProtocols(): string[] | undefined {
   const token = getToken();
-  return `${base}${path}${token ? `?token=${encodeURIComponent(token)}` : ""}`;
+  return token ? ["coa-auth", token] : undefined;
 }
 
 const post = <T,>(path: string, body?: unknown) =>
@@ -142,6 +149,8 @@ export const api = {
     post<MigrationRecord>(`/api/migrations/${id}/fallback/stop`, {
       migration_id: id, fall_back_to_source: fallBackToSource,
     }),
+
+  failback: (id: string) => post<MigrationRecord>(`/api/migrations/${id}/failback`),
 
   deleteMigration: (id: string) => request<{ deleted: boolean }>(`/api/migrations/${id}`, { method: "DELETE" }),
 

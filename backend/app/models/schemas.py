@@ -1,6 +1,7 @@
 """Pydantic schemas shared across the API, migration engine, connectors, and agent."""
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any, Optional
 from uuid import UUID, uuid4
@@ -17,6 +18,22 @@ from app.models.enums import (
     ValidationCheckId,
     ValidationSeverity,
 )
+
+# Couchbase's own rule for bucket names (letters, digits, `.`, `_`, `%`, `-`; at
+# most 100 characters). Enforced on every bucket name an operator types so a
+# name can never carry N1QL syntax into the backtick-quoted keyspaces the
+# loader builds (`bucket`.`scope`.`collection`).
+BUCKET_NAME_RE = re.compile(r"^[A-Za-z0-9._%-]{1,100}$")
+
+
+def validate_bucket_name(name: str) -> str:
+    name = name.strip()
+    if not BUCKET_NAME_RE.match(name):
+        raise ValueError(
+            "bucket names may only contain letters, digits, '.', '_', '%' and '-' (1-100 characters)"
+        )
+    return name
+
 
 # Every connection field that holds a credential. These are masked in every API
 # response and websocket frame (see redact_record) and encrypted at rest in the
@@ -237,23 +254,73 @@ class ValidationReport(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class TargetKeyspace(BaseModel):
+    """One destination keyspace a source container is written to. Any part left
+    blank falls back to the plan's defaults: `bucket` -> the plan's
+    destination_bucket, `scope` -> a sanitized source database/keyspace name (or
+    `_default`), `collection` -> a sanitized container name. See
+    core/targets.py, which is the single place these defaults are resolved."""
+
+    bucket: Optional[str] = None
+    scope: Optional[str] = None
+    collection: Optional[str] = None
+
+    @field_validator("bucket", "scope", "collection")
+    @classmethod
+    def _blank_to_none(cls, v: Optional[str]) -> Optional[str]:
+        v = v.strip() if isinstance(v, str) else v
+        return v or None
+
+    @field_validator("bucket")
+    @classmethod
+    def _bucket_name(cls, v: Optional[str]) -> Optional[str]:
+        return validate_bucket_name(v) if v else v
+
+    @field_validator("scope", "collection")
+    @classmethod
+    def _keyspace_part(cls, v: Optional[str]) -> Optional[str]:
+        if v and (len(v) > 251 or "`" in v):
+            raise ValueError("scope and collection names must be at most 251 characters and contain no backtick")
+        return v
+
+
 class ContainerMigrationSpec(BaseModel):
     container_name: str
     include: bool = True
-    # Defaults, applied by the migration engine if left blank: target_scope_name
-    # falls back to a sanitized version of the source database/keyspace name (or
-    # "_default"); target_collection_name falls back to a sanitized container name.
+    # Legacy single-target fields (kept so plans created by earlier versions
+    # keep working): applied when `targets` is empty. New plans use `targets`.
     target_scope_name: Optional[str] = None
     target_collection_name: Optional[str] = None
+    # Where this container's documents land. One entry is the common case; more
+    # than one fans every document out to each keyspace (e.g. a hot copy in a
+    # second bucket, or the same data in two scopes for two applications).
+    # Verification, reconciliation and fallback treat the FIRST entry as the
+    # primary copy; the others receive the same writes. Empty -> one target
+    # resolved from the legacy fields / plan defaults.
+    targets: list[TargetKeyspace] = Field(default_factory=list)
+
+    def resolved_targets(self) -> list[TargetKeyspace]:
+        """`targets`, or the legacy single target when it's empty. Never empty."""
+        if self.targets:
+            return self.targets
+        return [TargetKeyspace(scope=self.target_scope_name, collection=self.target_collection_name)]
 
 
 class MigrationPlanCreate(BaseModel):
     name: str
     source: SourceConnectionConfig
     destination: CouchbaseConnectionConfig
-    destination_bucket: str = Field(..., description="Couchbase bucket documents are written into.")
+    destination_bucket: str = Field(
+        ..., description="Default Couchbase bucket documents are written into. A container's targets can "
+        "name other buckets; every bucket named anywhere in the plan is provisioned if missing.",
+    )
     destination_bucket_ram_quota_mb: int = 1024
     strategy: MigrationStrategy = MigrationStrategy.FULL_LOAD
+
+    @field_validator("destination_bucket")
+    @classmethod
+    def _destination_bucket_name(cls, v: str) -> str:
+        return validate_bucket_name(v)
     containers: list[ContainerMigrationSpec] = Field(default_factory=list)
     concurrency: int = Field(8, ge=1, le=64)
     rate_limit_docs_per_sec: Optional[int] = None
@@ -282,6 +349,19 @@ class MigrationPlanCreate(BaseModel):
         """True for replication modes that stay running (CDC_LIVE / FULL_LOAD_AND_CDC)
         rather than completing after a single pass (FULL_LOAD)."""
         return self.strategy in (MigrationStrategy.CDC_LIVE, MigrationStrategy.FULL_LOAD_AND_CDC)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def target_buckets(self) -> list[str]:
+        """Every destination bucket this plan writes to (the default first)."""
+        buckets = [self.destination_bucket]
+        for spec in self.containers:
+            if not spec.include:
+                continue
+            for t in spec.resolved_targets():
+                if t.bucket and t.bucket not in buckets:
+                    buckets.append(t.bucket)
+        return buckets
 
 
 class MigrationStats(BaseModel):
@@ -361,12 +441,17 @@ class SyncState(BaseModel):
 
 class RollbackState(BaseModel):
     """What rollback needs to undo this migration's effect on the destination.
-    Captured before the first write, so it's accurate even after a crash."""
+    Captured before the first write, so it's accurate even after a crash.
+
+    Keyspaces are "bucket.scope.collection". Records written by earlier versions
+    hold "scope.collection" (always in the plan's destination_bucket);
+    core/targets.qualify_keyspace() upgrades those on read."""
     captured: bool = False
     bucket_created_by_migration: bool = False
-    preexisting_collections: list[str] = Field(default_factory=list)  # "scope.collection"
+    buckets_created_by_migration: list[str] = Field(default_factory=list)
+    preexisting_collections: list[str] = Field(default_factory=list)  # "bucket.scope.collection"
     owned_collections: list[str] = Field(default_factory=list)        # created by this migration
-    journal_keyspace: Optional[str] = None                             # "scope.collection"
+    journal_keyspace: Optional[str] = None                             # "bucket.scope.collection"
     journaled_docs: int = 0
     completed_steps: list[str] = Field(default_factory=list)
     last_summary: Optional[str] = None
@@ -377,7 +462,11 @@ class FallbackState(BaseModel):
     active: bool = False
     started_at: Optional[datetime] = None
     stopped_at: Optional[datetime] = None
-    watermarks: dict[str, int] = Field(default_factory=dict)  # "scope.collection" -> CAS
+    # How changes travel back: "cas_poll" (N1QL on META().cas, batched through
+    # the connector's apply_reverse_batch) or "xdcr" (Couchbase EE source with a
+    # self-managed destination: a reverse XDCR replication, destination -> source).
+    method: Optional[str] = None
+    watermarks: dict[str, int] = Field(default_factory=dict)  # "bucket.scope.collection" -> CAS
     changes_applied: int = 0
     deletes_applied: int = 0
     errors: int = 0
@@ -387,10 +476,11 @@ class FallbackState(BaseModel):
 
 
 class ContainerVerification(BaseModel):
-    """Per-container count comparison produced at the end of a one-time load and
-    at cutover. source_count is None when the source wasn't counted."""
+    """Per-container, per-target count comparison produced at the end of a
+    one-time load and at cutover. source_count is None when the source wasn't
+    counted. A container with several targets produces one row per target."""
     container: str
-    target: str  # scope.collection
+    target: str  # bucket.scope.collection
     source_count: Optional[int] = None
     dest_count: Optional[int] = None
     matched: Optional[bool] = None
@@ -421,6 +511,11 @@ class MigrationRecord(BaseModel):
     fallback: FallbackState = Field(default_factory=FallbackState)
     failed_events: list[FailedEvent] = Field(default_factory=list)
     cutover_at: Optional[datetime] = None
+    # Every cutover this migration has been through. Bi-directional operation
+    # (cut over -> fall back -> return to Couchbase -> cut over again ...) clears
+    # cutover_at on each return; this keeps the history.
+    cutover_history: list[datetime] = Field(default_factory=list)
+    failbacks: int = 0  # times forward sync was resumed after falling back to the source
     verification: list[ContainerVerification] = Field(default_factory=list)
     verified_at: Optional[datetime] = None
 

@@ -6,6 +6,7 @@ import type {
   MigrationStrategy,
   SourceConnectionConfig,
   SourceTopologySnapshot,
+  TargetKeyspace,
 } from "@/api/types";
 
 interface WizardState {
@@ -33,6 +34,11 @@ interface WizardState {
   setStrategy: (s: MigrationStrategy) => void;
   setContainers: (c: ContainerMigrationSpec[]) => void;
   toggleContainer: (name: string) => void;
+  /** Replace one container's target list (always at least one entry). */
+  setContainerTargets: (name: string, targets: TargetKeyspace[]) => void;
+  addContainerTarget: (name: string) => void;
+  updateContainerTarget: (name: string, index: number, patch: Partial<TargetKeyspace>) => void;
+  removeContainerTarget: (name: string, index: number) => void;
   setConcurrency: (n: number) => void;
   setReconcileIntervalMinutes: (n: number) => void;
   setJournalOverwrites: (v: boolean) => void;
@@ -80,6 +86,7 @@ export const useWizardStore = create<WizardState>((set, get) => ({
       set({
         containers: topo.containers.map((c) => ({
           container_name: c.name, include: true, target_scope_name: null, target_collection_name: null,
+          targets: [{ bucket: null, scope: null, collection: null }],
         })),
       });
     }
@@ -93,6 +100,27 @@ export const useWizardStore = create<WizardState>((set, get) => ({
     set({
       containers: get().containers.map((c) => (c.container_name === name ? { ...c, include: !c.include } : c)),
     }),
+  setContainerTargets: (name, targets) =>
+    set({
+      containers: get().containers.map((c) =>
+        c.container_name === name ? { ...c, targets: targets.length ? targets : [{ bucket: null, scope: null, collection: null }] } : c,
+      ),
+    }),
+  addContainerTarget: (name) =>
+    get().setContainerTargets(
+      name,
+      [...(get().containers.find((c) => c.container_name === name)?.targets ?? []), { bucket: null, scope: null, collection: null }],
+    ),
+  updateContainerTarget: (name, index, patch) =>
+    get().setContainerTargets(
+      name,
+      (get().containers.find((c) => c.container_name === name)?.targets ?? []).map((t, i) => (i === index ? { ...t, ...patch } : t)),
+    ),
+  removeContainerTarget: (name, index) =>
+    get().setContainerTargets(
+      name,
+      (get().containers.find((c) => c.container_name === name)?.targets ?? []).filter((_, i) => i !== index),
+    ),
   setConcurrency: (concurrency) => set({ concurrency }),
   setReconcileIntervalMinutes: (reconcileIntervalMinutes) => set({ reconcileIntervalMinutes }),
   setJournalOverwrites: (journalOverwrites) => set({ journalOverwrites }),

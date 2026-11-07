@@ -62,6 +62,8 @@ from app.config import get_settings
 from app.core.connectors.base import (
     CdcCapabilities,
     ChangeEvent,
+    ReverseBatchResult,
+    ReverseOp,
     SourceConnector,
     SourceConnectorError,
     SourceDocument,
@@ -416,6 +418,42 @@ class CouchbaseSourceConnector(SourceConnector):
                 pass
             return
         await asyncio.to_thread(coll.upsert, key, body or {})
+
+    async def apply_reverse_batch(self, container: str, ops: list[ReverseOp]) -> ReverseBatchResult:
+        """upsert_multi / remove_multi: the SDK pipelines the whole batch over
+        its KV connections in one go. (Enterprise sources with a self-managed
+        destination don't go through here at all -- fallback uses a reverse
+        XDCR replication; see core/fallback.py.)"""
+        result = ReverseBatchResult()
+        if not ops:
+            return result
+        cluster = await asyncio.to_thread(self._connect)
+        scope, collection = split_container(container)
+        coll = cluster.bucket(self._bucket()).scope(scope).collection(collection)
+        upserts = {op.key: (op.body or {}) for op in ops if op.op == "upsert"}
+        deletes = [op.key for op in ops if op.op == "delete"]
+
+        def _run() -> dict[str, str]:
+            errors: dict[str, str] = {}
+            if upserts:
+                res = coll.upsert_multi(upserts, return_exceptions=True)
+                if not res.all_ok:
+                    errors.update({k: str(e) for k, e in res.exceptions.items()})
+            if deletes:
+                res = coll.remove_multi(deletes, return_exceptions=True)
+                if not res.all_ok:
+                    errors.update({
+                        k: str(e) for k, e in res.exceptions.items() if not isinstance(e, DocumentNotFoundException)
+                    })
+            return errors
+
+        errors = await asyncio.to_thread(_run)
+        for op in ops:
+            if op.key in errors:
+                result.failed.append((op.key, errors[op.key]))
+            else:
+                result.applied += 1
+        return result
 
 
 def _container_name(scope: str, collection: str) -> str:
