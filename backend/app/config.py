@@ -69,13 +69,27 @@ class Settings(BaseSettings):
     memory_cb_collection: str = "episodes"
     memory_cb_vector_index: str = "agent_memory_vector_idx"
     # Must match the actual output length of QWEN_EMBEDDING_MODEL_NAME's /api/embeddings
-    # response -- see couchbase-memory/vector_index.json, which must stay in sync.
-    memory_embedding_dims: int = 4096
+    # response (768 for nomic-embed-text, 1024 for qwen3-embedding:0.6b, 2560 for
+    # qwen3:4b, 4096 for qwen3:8b). scripts/init_memory.py writes it into the FTS
+    # vector index and recreates the index when it changes; existing memories keep
+    # their old vectors and simply stop matching until re-embedded (see README).
+    memory_embedding_dims: int = 768
 
-    # --- Local LLM: Qwen 3, 8B params, served via Ollama-compatible API ---
+    # --- Local LLM, served via an Ollama-compatible API ---
+    # The assistant only explains supplied context (validation results, stats,
+    # recalled events); nothing on the migration's critical path calls it, so a
+    # 4B model is the smallest that stays useful (qwen3:1.7b runs but explains
+    # less; qwen3:8b is the previous default if you have the RAM). Embeddings use
+    # a dedicated small model -- better recall than a generative model's hidden
+    # state, at a fraction of the size.
+    # Off: no chat assistant and no memory embeddings (events are still recorded
+    # and listed, just not matched by similarity); nothing else changes. Compose
+    # doesn't build or start the Ollama container (COMPOSE_PROFILES); Helm skips
+    # the LLM Deployment (llm.enabled=false).
+    llm_enabled: bool = True
     qwen_base_url: str = "http://qwen-service:11434"
-    qwen_model_name: str = "qwen3:8b"
-    qwen_embedding_model_name: str = "qwen3:8b"
+    qwen_model_name: str = "qwen3:4b"
+    qwen_embedding_model_name: str = "nomic-embed-text"
     qwen_request_timeout_s: int = 120
 
     # --- Capella Management API (destination auto-provisioning) ---

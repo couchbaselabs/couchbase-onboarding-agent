@@ -133,8 +133,9 @@ async def health() -> dict:
 
 @app.get("/api/config")
 async def public_config() -> dict:
-    """Unauthenticated: tells the UI whether to ask for an API token."""
-    return {"auth_required": auth_enabled(), "version": __version__}
+    """Unauthenticated: tells the UI whether to ask for an API token and
+    whether the assistant (local LLM) is available in this deployment."""
+    return {"auth_required": auth_enabled(), "version": __version__, "llm_enabled": settings.llm_enabled}
 
 
 _TLS_FIELDS = ["use_tls", "ca_cert_pem", "tls_skip_verify"]

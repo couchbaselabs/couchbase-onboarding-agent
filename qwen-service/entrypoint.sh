@@ -11,9 +11,13 @@ until ollama list >/dev/null 2>&1; do
   sleep 1
 done
 
-if ! ollama list | grep -q "${QWEN_MODEL}"; then
-  echo "Pulling ${QWEN_MODEL} (first run only, cached afterwards)..."
-  ollama pull "${QWEN_MODEL}"
-fi
+# Chat model and the (separate, much smaller) embedding model.
+for model in "${QWEN_MODEL}" "${QWEN_EMBEDDING_MODEL}"; do
+  [ -n "$model" ] || continue
+  if ! ollama list | grep -q "${model}"; then
+    echo "Pulling ${model} (first run only, cached afterwards)..."
+    ollama pull "${model}"
+  fi
+done
 
 wait $SERVER_PID

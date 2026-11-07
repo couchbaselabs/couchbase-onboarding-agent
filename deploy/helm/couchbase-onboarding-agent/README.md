@@ -110,7 +110,8 @@ Couchbase's license terms.
 | `backend.extraEnv` | `[]` | Any other backend setting (`backend/app/config.py`) |
 | `frontend.service.type` | `ClusterIP` | Use `LoadBalancer` to expose without an ingress |
 | `ingress.*` | disabled | Ingress to the frontend |
-| `llm.enabled` / `llm.externalUrl` / `llm.model` | `true` / `""` / `qwen3:8b` | Assistant model endpoint |
+| `llm.enabled` / `llm.externalUrl` / `llm.model` | `true` / `""` / `qwen3:4b` | Assistant model endpoint; `enabled: false` with no `externalUrl` runs without the assistant (`LLM_ENABLED=false`) |
+| `llm.embeddingModel` / `llm.embeddingDims` | `nomic-embed-text` / `768` | Agent-memory embedding model and its vector length (change together) |
 | `memory.bundled.enabled` | `true` | Run an evaluation agent-memory node |
 | `memory.external.connectionString` | `""` | Agent-memory cluster when not bundled |
 

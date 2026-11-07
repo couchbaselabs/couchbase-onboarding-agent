@@ -27,6 +27,16 @@ First tagged release of the Couchbase Labs Onboarding Agent.
 
 ### Changed
 - Product name in the UI is now **Couchbase Labs Onboarding Agent**.
+- **Optional local LLM.** `COMPOSE_PROFILES=` + `LLM_ENABLED=false` (or Helm `llm.enabled: false`)
+  runs the whole stack without the Ollama container: no model download, chat off with a clear
+  message, bottleneck alerts still delivered, memory recall by recency. Nothing on a migration's
+  path depends on the model.
+- **Smaller default models.** The assistant now runs on `qwen3:4b` (was `qwen3:8b`) and agent
+  memory embeds with a dedicated `nomic-embed-text` model (768 dims; was the 8B chat model's
+  4096-dim hidden state): ~2.9 GB of downloads instead of ~5.2 GB and about half the RAM. The
+  memory-init job recreates the vector index when the embedding length changes
+  (`MEMORY_EMBEDDING_DIMS`); memories embedded by an earlier version aren't recalled until
+  re-embedded or cleared (see README "Changing the model").
 - Rollback state records keyspaces as `bucket.scope.collection`; records from earlier
   builds are upgraded on read.
 - Fallback sync pages destination keys and only advances its watermark past applied

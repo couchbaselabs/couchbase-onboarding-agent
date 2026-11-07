@@ -337,7 +337,7 @@ export interface AgentChatResponse {
   suggested_actions: string[];
 }
 
-export type AgentHealthState = "ready" | "waiting" | "error";
+export type AgentHealthState = "ready" | "waiting" | "error" | "disabled";
 
 export interface AgentStatusResponse {
   status: AgentHealthState;

@@ -54,27 +54,34 @@ services:
       MEMORY_CB_BUCKET: ${MEMORY_CB_BUCKET:-agent_memory}
       MEMORY_CB_SCOPE: ${MEMORY_CB_SCOPE:-agent}
       MEMORY_CB_COLLECTION: ${MEMORY_CB_COLLECTION:-episodes}
+      MEMORY_EMBEDDING_DIMS: ${MEMORY_EMBEDDING_DIMS:-768}
     networks: [coa-net]
     restart: on-failure:5
 
   # -- Local LLM: Qwen 3, served via an Ollama-compatible API ----------------
+  # Optional. Only built and started when the "llm" profile is active, which
+  # .env does with COMPOSE_PROFILES=llm (the default in env.example). To run
+  # without the assistant -- no model download, ~3 GB less RAM -- set
+  # COMPOSE_PROFILES= (empty) and LLM_ENABLED=false in .env before building.
   # CPU by default. For an NVIDIA GPU on Linux:
   #   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up
   qwen-service:
+    profiles: [llm]
     build: ./qwen-service
     restart: unless-stopped
     security_opt: [no-new-privileges:true]
     environment:
-      QWEN_MODEL: ${QWEN_MODEL_NAME:-qwen3:8b}
+      QWEN_MODEL: ${QWEN_MODEL_NAME:-qwen3:4b}
+      QWEN_EMBEDDING_MODEL: ${QWEN_EMBEDDING_MODEL_NAME:-nomic-embed-text}
     volumes:
       - ollama_data:/root/.ollama
     ports:
       - "127.0.0.1:11434:11434"
     networks: [coa-net]
     healthcheck:
-      # Healthy only once the model is pulled (first boot downloads ~5 GB), so the
-      # chat panel doesn't come up before the model can answer.
-      test: ["CMD-SHELL", "ollama list | grep -q \"$${QWEN_MODEL}\""]
+      # Healthy only once both models are pulled (first boot downloads ~3 GB), so
+      # the chat panel doesn't come up before the model can answer.
+      test: ["CMD-SHELL", "ollama list | grep -q \"$${QWEN_MODEL}\" && ollama list | grep -q \"$${QWEN_EMBEDDING_MODEL}\""]
       interval: 15s
       timeout: 10s
       retries: 60
@@ -95,7 +102,11 @@ services:
     environment:
       MEMORY_CB_CONNECTION_STRING: couchbase://couchbase-memory
       MEMORY_CB_PASSWORD: ${MEMORY_CB_PASSWORD:?Set MEMORY_CB_PASSWORD in .env (see env.example)}
+      LLM_ENABLED: ${LLM_ENABLED:-true}
       QWEN_BASE_URL: http://qwen-service:11434
+      QWEN_MODEL_NAME: ${QWEN_MODEL_NAME:-qwen3:4b}
+      QWEN_EMBEDDING_MODEL_NAME: ${QWEN_EMBEDDING_MODEL_NAME:-nomic-embed-text}
+      MEMORY_EMBEDDING_DIMS: ${MEMORY_EMBEDDING_DIMS:-768}
     volumes:
       # Encrypted migration records, checkpoints and the generated state key.
       - state_data:/data/state
@@ -104,15 +115,12 @@ services:
       - cbbackupmgr_archives:/data/cbbackupmgr-archives
     ports:
       - "127.0.0.1:8000:8000"
-    # Start as soon as the memory store and the LLM containers are up, without
-    # waiting for them to be healthy: migrations don't need either, and the UI
-    # shows the assistant as "waiting" until the model is ready. (Gating on
-    # health kept the API and UI down for the whole first-boot model download,
-    # and indefinitely if the memory node never became healthy.)
+    # Start as soon as the memory store is up, without waiting for it to be
+    # healthy: migrations don't need it. The LLM container is deliberately not a
+    # dependency -- it's optional (see the "llm" profile above), and the UI shows
+    # the assistant as "waiting" until its model is ready when it is enabled.
     depends_on:
       couchbase-memory:
-        condition: service_started
-      qwen-service:
         condition: service_started
     networks: [coa-net]
 

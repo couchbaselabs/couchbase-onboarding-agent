@@ -7,7 +7,7 @@ import logging
 
 from fastapi import APIRouter, HTTPException
 
-from app.core.qwen_agent import QwenAgentClient
+from app.core.qwen_agent import LlmDisabledError, QwenAgentClient
 from app.core.recommendation import recommend_replication_mode
 from app.core.store import MigrationStore
 from app.memory.couchbase_memory import AgentMemoryStore
@@ -60,6 +60,8 @@ async def chat(req: AgentChatRequest) -> AgentChatResponse:
     client = QwenAgentClient()
     try:
         reply = await client.chat([{"role": "user", "content": req.message}], context=context)
+    except LlmDisabledError as exc:
+        raise HTTPException(503, str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(503, f"Local LLM (Qwen) unavailable: {exc}") from exc
 

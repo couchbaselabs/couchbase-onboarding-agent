@@ -140,10 +140,16 @@ ingress:
 # Ollama in the cluster (enabled: true) or point externalUrl at one you have.
 # ---------------------------------------------------------------------------
 llm:
+  # false: no LLM Deployment and the backend runs with LLM_ENABLED=false (no chat,
+  # memory recall by recency instead of similarity). externalUrl points the
+  # backend at an Ollama-compatible endpoint you run elsewhere.
   enabled: true
   externalUrl: ""
-  model: qwen3:8b
-  embeddingModel: qwen3:8b
+  model: qwen3:4b
+  # Dedicated embedding model for agent memory; embeddingDims must match its
+  # vector length (nomic-embed-text=768). Changing it recreates the vector index.
+  embeddingModel: nomic-embed-text
+  embeddingDims: 768
   image:
     repository: ollama/ollama
     tag: "0.6.8"

@@ -48,7 +48,7 @@ bucket.scope.collection targets** in the destination.
   reconciliation results, failed writes, verification counts, bottleneck findings.
 - **Bottleneck detection and auto-throttling**: source rate-limiting and destination backpressure reduce
   write concurrency live; stalled or degraded throughput is diagnosed in the assistant panel.
-- **Assistant** (Qwen via an Ollama-compatible API, running locally): answers questions grounded in the
+- **Assistant** (Qwen 3 via an Ollama-compatible API, running locally): answers questions grounded in the
   migration's live state and recalls similar past events from a Couchbase-backed vector memory. Source
   credentials, samples and data never leave your deployment.
 - **Light and dark mode** with the same look as the Couchbase Agent Operations Manager: light by default,
@@ -88,8 +88,8 @@ docker compose up --build
 Then open <http://localhost:5173>. The API is at <http://localhost:8000> (OpenAPI docs at `/docs`). All
 ports bind to `127.0.0.1`.
 
-The first start pulls the Qwen model (`qwen3:8b`, ~5 GB) and initializes the agent-memory node; later
-starts are fast. Behind a TLS-inspecting corporate proxy, run `./scripts/setup-corporate-ca.sh` before
+The first start pulls the assistant's chat model (`qwen3:4b`, ~2.6 GB) and the agent-memory embedding
+model (`nomic-embed-text`, ~0.3 GB) and initializes the agent-memory node; later starts are fast. Behind a TLS-inspecting corporate proxy, run `./scripts/setup-corporate-ca.sh` before
 building (see [troubleshooting](#build-fails-behind-a-corporate-proxy)).
 
 > The agent-memory container uses the `couchbase:enterprise` image, which is free for development and
@@ -378,13 +378,53 @@ them and [`env.example`](env.example) for a starting `.env`).
 | `CASSANDRA_CDC_POLL_INTERVAL_S` | `30` | Cassandra poll interval |
 | `COUCHBASE_CDC_POLL_INTERVAL_S` / `COUCHBASE_CDC_OVERLAP_S` | `5` / `10` | CAS polling interval and overlap window |
 | `FALLBACK_POLL_INTERVAL_S` | `5` | Fallback sync poll interval |
-| `QWEN_BASE_URL`, `QWEN_MODEL_NAME` | `http://qwen-service:11434`, `qwen3:8b` | Any Ollama-compatible endpoint (`/api/chat`, `/api/embeddings`) |
+| `LLM_ENABLED` | `true` | `false` runs without the assistant (pair with `COMPOSE_PROFILES=` so the LLM container isn't built) |
+| `QWEN_BASE_URL`, `QWEN_MODEL_NAME` | `http://qwen-service:11434`, `qwen3:4b` | Any Ollama-compatible endpoint (`/api/chat`, `/api/embeddings`) and the chat model |
+| `QWEN_EMBEDDING_MODEL_NAME`, `MEMORY_EMBEDDING_DIMS` | `nomic-embed-text`, `768` | Agent-memory embedding model and its vector length -- change both together (see below) |
 | `MEMORY_CB_*` | bundled node | Agent-memory cluster (not a migration source or destination) |
 | `CAPELLA_API_TOKEN`, `CAPELLA_ORG_ID` | empty | Auto-provision Capella destination buckets |
 | `CBBACKUPMGR_PATH`, `COUCHBASE_BACKUP_ARCHIVE_DIR` | `cbbackupmgr`, `/data/cbbackupmgr-archives` | Couchbase-to-Couchbase bulk copy |
 
 The UI calls the API on its own origin (`/api`, `/ws`), proxied by nginx in the container and by Vite in
 development. Set `VITE_API_BASE_URL` at build time only if you host the UI separately.
+
+### Running without the local LLM
+
+The assistant is optional. Set both of these in `.env` **before** `docker compose up --build`:
+
+```
+COMPOSE_PROFILES=
+LLM_ENABLED=false
+```
+
+`COMPOSE_PROFILES=` (empty) keeps the `qwen-service` container out of the build and the stack entirely --
+no Ollama image, no model download, roughly 3 GB less RAM. `LLM_ENABLED=false` tells the backend not to
+contact it: `/api/agent/status` reports `disabled`, chat returns a clear `503`, the UI's floating panel
+becomes "Agent alerts" (bottleneck findings and auto-throttling still arrive there -- they come from the
+engine, not the model), and agent memory keeps recording events but recalls them by recency instead of
+similarity. Everything else -- validation, the replication-mode recommendation, bulk copy, continuous
+sync, cutover, rollback, fallback and failback -- is unchanged. With Helm, set `llm.enabled: false` (and
+no `llm.externalUrl`). Turn it back on later with `COMPOSE_PROFILES=llm`, `LLM_ENABLED=true` and
+`docker compose up --build`.
+
+### Changing the model
+
+Nothing on a migration's critical path calls the LLM: validation, the replication-mode recommendation,
+the engine, reconciliation and bottleneck detection are deterministic. The model only (1) answers chat
+questions from supplied context and (2) embeds memory events for recall. That's why the defaults are small:
+
+| Role | Default | Smaller | Larger |
+|---|---|---|---|
+| Chat (`QWEN_MODEL_NAME`) | `qwen3:4b` (~2.6 GB) -- the smallest that still reasons about the context rather than paraphrasing it | `qwen3:1.7b` (~1.4 GB) works but explains less; `qwen3:0.6b` isn't recommended | `qwen3:8b` (~5 GB) for more depth |
+| Embeddings (`QWEN_EMBEDDING_MODEL_NAME` + `MEMORY_EMBEDDING_DIMS`) | `nomic-embed-text` / `768` | -- | `qwen3-embedding:0.6b` / `1024` |
+
+Any Ollama model works for chat with no other change. Changing the **embedding** model also changes the
+vector length, so set `MEMORY_EMBEDDING_DIMS` to match; on the next start `memory-init` drops and
+recreates the FTS vector index with the new length. Memories embedded with the previous model keep their
+old vectors and aren't recalled any more (they're skipped, not errors). To re-embed them, delete the
+documents in the `agent_memory` bucket's `agent.episodes` collection (`DELETE FROM
+\`agent_memory\`.\`agent\`.\`episodes\``) -- the assistant rebuilds memory as migrations run -- or
+leave them and let new events accumulate.
 
 ## Operations and troubleshooting
 

@@ -61,12 +61,28 @@ class QwenAgentError(RuntimeError):
     pass
 
 
+class LlmDisabledError(QwenAgentError):
+    """The local LLM is turned off (LLM_ENABLED=false); nothing was contacted."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "The assistant is turned off for this deployment (LLM_ENABLED=false). Migrations, validation "
+            "and bottleneck alerts work as usual; set LLM_ENABLED=true and start the LLM service to chat."
+        )
+
+
 class QwenAgentClient:
     def __init__(self) -> None:
         self.settings = get_settings()
         self.base_url = self.settings.qwen_base_url.rstrip("/")
 
+    @property
+    def enabled(self) -> bool:
+        return self.settings.llm_enabled
+
     async def chat(self, messages: list[dict[str, str]], context: dict[str, Any] | None = None) -> str:
+        if not self.enabled:
+            raise LlmDisabledError()
         full_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         if context:
             full_messages.append({
@@ -88,7 +104,7 @@ class QwenAgentClient:
                 # A bare "500 Internal Server Error" from Ollama here is almost
                 # always the model not being loaded yet -- on first boot the
                 # qwen-service container reports healthy (server up) well before
-                # entrypoint.sh finishes pulling the ~5GB model, so an early chat
+                # entrypoint.sh finishes pulling the models, so an early chat
                 # request can race a still-in-progress download. Check for that
                 # specific, actionable case rather than surfacing the raw error.
                 state, _detail = await self.status()
@@ -103,6 +119,8 @@ class QwenAgentClient:
         return data.get("message", {}).get("content", "").strip()
 
     async def embed(self, text: str) -> list[float]:
+        if not self.enabled:
+            raise LlmDisabledError()
         payload = {"model": self.settings.qwen_embedding_model_name, "prompt": text}
         async with httpx.AsyncClient(timeout=self.settings.qwen_request_timeout_s) as client:
             try:
@@ -124,13 +142,16 @@ class QwenAgentClient:
         """Reachability + readiness of the Qwen service, for the sidebar status
         indicator and for enriching chat error messages. Never raises.
 
-        Returns ("ready" | "waiting" | "error", human-readable detail):
+        Returns ("ready" | "waiting" | "error" | "disabled", human-readable detail):
+          - "disabled": LLM_ENABLED=false; nothing is contacted.
           - "ready": server reachable and qwen_model_name is loaded.
-          - "waiting": server reachable but the model is still being pulled
-            (first boot only -- the ~5GB qwen3:8b download takes a few minutes).
+          - "waiting": server reachable but the chat or embedding model is still
+            being pulled (first boot only -- a few minutes).
           - "error": can't reach the server at all (not started, crashed, or a
             networking/config problem).
         """
+        if not self.enabled:
+            return "disabled", "The assistant is turned off for this deployment (LLM_ENABLED=false)."
         try:
             async with httpx.AsyncClient(timeout=5) as client:
                 resp = await client.get(f"{self.base_url}/api/tags")
@@ -143,9 +164,16 @@ class QwenAgentClient:
         except Exception:  # noqa: BLE001
             return "error", "Qwen service responded but its model list couldn't be parsed."
 
-        if self.settings.qwen_model_name in models:
-            return "ready", f"Qwen ('{self.settings.qwen_model_name}') is loaded and ready."
+        # Ollama lists "name:tag"; a bare name in config means the ":latest" tag.
+        def loaded(name: str) -> bool:
+            return name in models or (":" not in name and f"{name}:latest" in models)
+
+        missing = [m for m in (self.settings.qwen_model_name, self.settings.qwen_embedding_model_name)
+                   if not loaded(m)]
+        if not missing:
+            return "ready", (f"Assistant model '{self.settings.qwen_model_name}' and embedding model "
+                             f"'{self.settings.qwen_embedding_model_name}' are loaded and ready.")
         return (
             "waiting",
-            f"Qwen model '{self.settings.qwen_model_name}' is still downloading (first boot only).",
+            f"Model(s) {missing} are still downloading (first boot only).",
         )

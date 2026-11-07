@@ -31,7 +31,7 @@
                 {
                   "name": "embedding",
                   "type": "vector",
-                  "dims": 4096,
+                  "dims": 768,
                   "similarity": "dot_product",
                   "vector_index_optimized_for": "recall",
                   "index": true

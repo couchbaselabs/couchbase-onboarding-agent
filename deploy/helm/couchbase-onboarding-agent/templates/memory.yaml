@@ -122,6 +122,8 @@ spec:
               value: {{ .Values.memory.scope | quote }}
             - name: MEMORY_CB_COLLECTION
               value: {{ .Values.memory.collection | quote }}
+            - name: MEMORY_EMBEDDING_DIMS
+              value: {{ .Values.llm.embeddingDims | quote }}
             - name: MEMORY_CB_RAM_QUOTA_MB
               value: {{ .Values.memory.bundled.ramQuotaMB | quote }}
             - name: MEMORY_CB_INDEX_RAM_QUOTA_MB

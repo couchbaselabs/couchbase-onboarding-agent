@@ -79,12 +79,16 @@ spec:
               value: kubernetes
             - name: LOG_LEVEL
               value: {{ .Values.backend.logLevel | quote }}
+            - name: LLM_ENABLED
+              value: {{ (or .Values.llm.enabled (ne .Values.llm.externalUrl "")) | quote }}
             - name: QWEN_BASE_URL
               value: {{ include "coa.llmUrl" . | quote }}
             - name: QWEN_MODEL_NAME
               value: {{ .Values.llm.model | quote }}
             - name: QWEN_EMBEDDING_MODEL_NAME
               value: {{ .Values.llm.embeddingModel | quote }}
+            - name: MEMORY_EMBEDDING_DIMS
+              value: {{ .Values.llm.embeddingDims | quote }}
             - name: MEMORY_CB_CONNECTION_STRING
               value: {{ include "coa.memoryConnectionString" . | quote }}
             - name: MEMORY_CB_USERNAME

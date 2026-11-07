@@ -38,6 +38,8 @@ COLLECTION = os.environ.get("MEMORY_CB_COLLECTION", "episodes")
 RAM_QUOTA_MB = int(os.environ.get("MEMORY_CB_RAM_QUOTA_MB", "512"))
 INDEX_RAM_QUOTA_MB = int(os.environ.get("MEMORY_CB_INDEX_RAM_QUOTA_MB", "256"))
 FTS_RAM_QUOTA_MB = int(os.environ.get("MEMORY_CB_FTS_RAM_QUOTA_MB", "256"))
+# Vector length of the backend's embedding model (MEMORY_EMBEDDING_DIMS there too).
+EMBEDDING_DIMS = int(os.environ.get("MEMORY_EMBEDDING_DIMS", "768"))
 
 MGMT = f"http://{HOST}:8091"
 FTS = f"http://{HOST}:8094"
@@ -174,19 +176,42 @@ def ensure_primary_index(attempts: int = 20, delay_s: float = 3.0) -> None:
     print(f"WARNING: primary index creation did not succeed after {last_attempt} attempts: {last_error}")
 
 
+def _vector_dims(definition: dict) -> int | None:
+    try:
+        props = definition["params"]["mapping"]["types"][f"{SCOPE}.{COLLECTION}"]["properties"]
+        return int(props["embedding"]["fields"][0]["dims"])
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
+
+
 def ensure_vector_index() -> None:
     index_path = os.path.join(os.path.dirname(__file__), "..", "couchbase-memory", "vector_index.json")
     with open(index_path) as f:
         definition = json.load(f)
     definition["sourceName"] = BUCKET
+    definition["params"]["mapping"]["types"][f"{SCOPE}.{COLLECTION}"]["properties"]["embedding"]["fields"][0]["dims"] = EMBEDDING_DIMS
 
     name = definition["name"]
     existing = requests.get(f"{FTS}/api/index/{name}", auth=AUTH, timeout=5)
     if existing.status_code == 200:
-        print(f"FTS vector index '{name}' already exists.")
-        return
+        current = _vector_dims(existing.json().get("indexDef") or {})
+        if current == EMBEDDING_DIMS:
+            print(f"FTS vector index '{name}' already exists ({EMBEDDING_DIMS} dims).")
+            return
+        # The embedding model changed: a vector index can't change its dims in
+        # place, so drop and recreate it. Memories embedded with the old model
+        # keep their vectors (wrong length -> not indexed, and skipped by the
+        # N1QL fallback) until they're re-embedded or cleared -- see README.
+        print(f"FTS vector index '{name}' has {current} dims but the embedding model produces "
+              f"{EMBEDDING_DIMS}; recreating it. Memories embedded with the previous model won't be "
+              "recalled until re-embedded.")
+        r = requests.delete(f"{FTS}/api/index/{name}", auth=AUTH, timeout=20)
+        if r.status_code not in (200, 404):
+            print(f"WARNING: could not drop the old vector index ({r.status_code}): {r.text[:300]}")
+            return
 
-    print(f"Attempting to create FTS vector index '{name}' (requires Enterprise Edition or Capella)...")
+    print(f"Attempting to create FTS vector index '{name}' ({EMBEDDING_DIMS} dims; requires Enterprise "
+          "Edition or Capella)...")
     r = requests.put(
         f"{FTS}/api/index/{name}",
         auth=AUTH, json=definition, timeout=20,

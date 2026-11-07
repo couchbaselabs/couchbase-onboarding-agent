@@ -3,6 +3,7 @@ import { useParams } from "react-router-dom";
 import { AlertTriangle, MessageSquareText, Send, Wrench, X } from "lucide-react";
 import { api, ApiError } from "@/api/client";
 import { useMigrationSocket } from "@/hooks/useMigrationSocket";
+import { useAgentStatus } from "@/hooks/useAgentStatus";
 import type { BottleneckFinding } from "@/api/types";
 import { BrandMark } from "@/assets/CouchbaseLogo";
 
@@ -27,6 +28,9 @@ export default function AgentPanel() {
   const [message, setMessage] = useState("");
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [sending, setSending] = useState(false);
+  // LLM_ENABLED=false: the panel still delivers bottleneck alerts (those come
+  // from the engine, not the model); only the chat input goes away.
+  const chatDisabled = useAgentStatus().status === "disabled";
 
   // Live-tail the currently viewed migration (if any) purely to catch new
   // bottleneck findings as they land, independent of anything the user is
@@ -73,9 +77,9 @@ export default function AgentPanel() {
 
   if (!open) {
     return (
-      <button onClick={() => setOpen(true)} className="btn btn-primary agent-fab" aria-label="Ask the agent">
+      <button onClick={() => setOpen(true)} className="btn btn-primary agent-fab" aria-label={chatDisabled ? "Agent alerts" : "Ask the agent"}>
         <MessageSquareText size={18} />
-        Ask the agent
+        {chatDisabled ? "Agent alerts" : "Ask the agent"}
       </button>
     );
   }
@@ -85,9 +89,9 @@ export default function AgentPanel() {
       <div className="agent-panel-header">
         <BrandMark />
         <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 13.5, fontWeight: 700 }}>Ask the agent</div>
+          <div style={{ fontSize: 13.5, fontWeight: 700 }}>{chatDisabled ? "Agent alerts" : "Ask the agent"}</div>
           <div className="muted" style={{ fontSize: 11.5 }}>
-            {migrationId ? "About this migration" : "Planning, cutover, rollback"}
+            {chatDisabled ? "Bottleneck alerts and auto-throttling" : migrationId ? "About this migration" : "Planning, cutover, rollback"}
           </div>
         </div>
         <button className="icon-btn" onClick={() => setOpen(false)} aria-label="Close">
@@ -109,6 +113,12 @@ export default function AgentPanel() {
                 <li>Recall similar past incidents from Couchbase-backed memory</li>
               </ul>
             </div>
+            {chatDisabled ? (
+              <div className="muted">
+                The chat assistant is turned off for this deployment (<code>LLM_ENABLED=false</code>). Alerts still
+                appear here as they happen; the replication-mode recommendation in the wizard works without it.
+              </div>
+            ) : (
             <div>
               <div className="stat-label" style={{ marginBottom: 4 }}>Ask me to</div>
               <ul style={{ margin: 0, paddingLeft: 18, color: "var(--text-muted)" }}>
@@ -118,6 +128,7 @@ export default function AgentPanel() {
                 <li>Reason through how your source data will map into Couchbase documents</li>
               </ul>
             </div>
+            )}
           </div>
         )}
         {turns.map((t, i) =>
@@ -138,6 +149,7 @@ export default function AgentPanel() {
         )}
         {sending && <div className="muted">Thinking...</div>}
       </div>
+      {!chatDisabled && (
       <div style={{ padding: 10, borderTop: "1px solid var(--border)", display: "flex", gap: 8 }}>
         <input
           value={message}
@@ -151,6 +163,7 @@ export default function AgentPanel() {
           <Send size={14} />
         </button>
       </div>
+      )}
     </div>
   );
 }

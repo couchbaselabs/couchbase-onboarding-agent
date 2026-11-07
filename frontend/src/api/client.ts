@@ -95,11 +95,18 @@ export function wsProtocols(): string[] | undefined {
   return token ? ["coa-auth", token] : undefined;
 }
 
+export interface PublicConfig {
+  auth_required: boolean;
+  version: string;
+  /** false when the deployment runs without the local LLM (LLM_ENABLED=false). */
+  llm_enabled?: boolean;
+}
+
 const post = <T,>(path: string, body?: unknown) =>
   request<T>(path, { method: "POST", body: body === undefined ? undefined : JSON.stringify(body) });
 
 export const api = {
-  publicConfig: () => request<{ auth_required: boolean; version: string }>("/api/config"),
+  publicConfig: () => request<PublicConfig>("/api/config"),
 
   sourceTypes: () => request<SourceTypeInfo[]>("/api/source-types"),
 

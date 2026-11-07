@@ -44,20 +44,24 @@ spec:
               value: "0.0.0.0:11434"
             - name: MODEL
               value: {{ .Values.llm.model | quote }}
-          # Serve, and pull the model on first start (cached on the volume).
+            - name: EMBEDDING_MODEL
+              value: {{ .Values.llm.embeddingModel | quote }}
+          # Serve, and pull both models on first start (cached on the volume).
           command: ["/bin/sh", "-c"]
           args:
             - |
               ollama serve &
               until ollama list >/dev/null 2>&1; do sleep 1; done
-              ollama list | grep -q "$MODEL" || ollama pull "$MODEL"
+              for m in "$MODEL" "$EMBEDDING_MODEL"; do
+                ollama list | grep -q "$m" || ollama pull "$m"
+              done
               wait
           ports:
             - name: http
               containerPort: 11434
           readinessProbe:
             exec:
-              command: ["/bin/sh", "-c", "ollama list | grep -q \"$MODEL\""]
+              command: ["/bin/sh", "-c", "ollama list | grep -q \"$MODEL\" && ollama list | grep -q \"$EMBEDDING_MODEL\""]
             periodSeconds: 15
             failureThreshold: 240
           livenessProbe:

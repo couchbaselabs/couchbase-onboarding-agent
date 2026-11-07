@@ -18,6 +18,7 @@ on what kind of migration is being run.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 from datetime import datetime
@@ -89,11 +90,12 @@ class AgentMemoryStore:
     async def remember(self, kind: str, payload: dict[str, Any], migration_id: str | None = None) -> str:
         """Embed and persist a memory event. Returns the memory document id."""
         text = summarize_for_embedding(kind, payload)
-        try:
-            vector = await embed_text(text)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Embedding failed, storing memory without vector: %s", exc)
-            vector = []
+        vector: list[float] = []
+        if self.settings.llm_enabled:
+            try:
+                vector = await embed_text(text)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Embedding failed, storing memory without vector: %s", exc)
 
         doc_id = f"mem::{uuid4()}"
         collection, _scope = self._collection()
@@ -108,6 +110,14 @@ class AgentMemoryStore:
         return doc_id
 
     async def recall(self, query_text: str, limit: int = 5) -> list[dict[str, Any]]:
+        if not self.settings.llm_enabled:
+            # No embeddings without the LLM: hand back the most recent events
+            # instead of similar ones, so callers still get useful context.
+            try:
+                return await asyncio.to_thread(self._recall_recent, limit)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Recent-memory recall failed: %s", exc)
+                return []
         try:
             query_vector = await embed_text(query_text)
         except Exception as exc:  # noqa: BLE001
@@ -130,6 +140,14 @@ class AgentMemoryStore:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Cosine-similarity fallback recall failed: %s", exc)
             return []
+
+    def _recall_recent(self, limit: int) -> list[dict[str, Any]]:
+        cluster = self._connect()
+        query = (
+            f"SELECT META(m).id AS id, m.kind, m.migration_id, m.text, m.payload, m.created_at "
+            f"FROM {self._keyspace()} AS m ORDER BY m.created_at DESC LIMIT {int(limit)}"
+        )
+        return [dict(row) for row in cluster.query(query).rows()]
 
     def _recall_via_vector_search(self, query_vector: list[float], limit: int) -> list[dict[str, Any]]:
         cluster = self._connect()
