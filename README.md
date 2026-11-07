@@ -12,7 +12,7 @@ without losing writes, and **failback** resumes forward sync from that point so 
 Couchbase without another bulk copy. Each source container can be mapped to **one or more
 bucket.scope.collection targets** in the destination.
 
-<img width="1470" height="811" alt="Couchbase Onboarding Agent dashboard" src="https://github.com/user-attachments/assets/917b19ef-0db2-44f5-9dae-6d6c764b1027" />
+<img width="1728" height="963" alt="image" src="https://github.com/user-attachments/assets/717c335f-e8c9-42a0-a4d4-1eae38507747" />
 
 - [What it does](#what-it-does)
 - [Supported sources](#supported-sources)
