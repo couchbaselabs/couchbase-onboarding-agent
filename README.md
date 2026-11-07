@@ -168,7 +168,7 @@ rollback, and the backend runs any number of them concurrently within its CPU bu
 | Disk: `/data/scratch` | reconciliation + fallback key sets (SQLite) | 1 GB | 10 GB per 100 M keys | ~100 bytes per key, source and destination listed once per reconciliation run; deleted afterwards. |
 | Disk: `/data/cbbackupmgr-archives` | Couchbase-source bulk copies | source bucket size | 1.5 × source bucket size | One archive per migration; remove after the migration completes. |
 
-### Operations that scale
+### Operations at scale
 
 - **Verification** at the end of a one-time load and at cutover counts every source key per container
   (`VERIFY_SOURCE_COUNTS=true`): a full key scan at the source. Turn it off for very large containers if the
