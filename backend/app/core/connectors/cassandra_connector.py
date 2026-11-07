@@ -480,7 +480,7 @@ class CassandraConnector(SourceConnector):
         outcomes = await asyncio.to_thread(
             execute_concurrent, session, statements, 64, raise_on_first_error=False,
         )
-        for op, (ok, res) in zip(prepared_ops, outcomes):
+        for op, (ok, res) in zip(prepared_ops, outcomes, strict=True):
             if ok:
                 result.applied += 1
             else:

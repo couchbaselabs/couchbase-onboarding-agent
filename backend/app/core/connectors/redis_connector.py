@@ -475,7 +475,7 @@ class RedisConnector(SourceConnector):
             result.failed.extend((op.key, str(exc)) for op in ops)
             return result
         pos = 0
-        for op, n in zip(ops, counts):
+        for op, n in zip(ops, counts, strict=True):
             errors = [r for r in replies[pos:pos + n] if isinstance(r, Exception)]
             pos += n
             if errors:
