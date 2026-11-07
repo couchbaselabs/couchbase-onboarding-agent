@@ -18,8 +18,9 @@ bucket.scope.collection targets** in the destination.
 - [Supported sources](#supported-sources)
 - [Quick start (Docker Compose)](#quick-start-docker-compose)
 - [Kubernetes (Helm)](#kubernetes-helm)
+- [Sizing and scale](#sizing-and-scale)
 - [How bulk copy + continuous sync works](#how-bulk-copy--continuous-sync-works)
-- [Cutover, rollback and fallback](#cutover-rollback-and-fallback)
+- [Cutover, rollback, fallback and failback](#cutover-rollback-fallback-and-failback-bi-directional-replication)
 - [Security](#security)
 - [Source prerequisites and notes](#source-prerequisites-and-notes)
 - [Configuration](#configuration)
@@ -113,6 +114,91 @@ kubectl port-forward -n migrations svc/onboarding-couchbase-onboarding-agent-fro
 
 For production -- external agent memory, an existing LLM endpoint, ingress with TLS, your own image
 registry, backups -- see the [chart README](deploy/helm/couchbase-onboarding-agent/README.md).
+
+## Sizing and scale
+
+The agent is a control plane plus a streaming pipeline, not a data store: documents pass through it in
+batches and nothing is buffered to disk except key sets for reconciliation/fallback and `cbbackupmgr`
+archives. Throughput is bounded first by the source's read rate and the destination cluster's write rate,
+and only then by the backend's worker pool -- so size the two databases for the migration first, then
+give the backend enough CPU, RAM and disk for the concurrency you intend to run.
+
+### How throughput scales
+
+- **Bulk copy** runs `CONCURRENCY` parallel writers (1-64, default 8) over batches of `DEFAULT_BATCH_SIZE`
+  documents (default 500), grouped per target keyspace and written with the SDK's `upsert_multi`. Each
+  worker is a thread holding one batch in flight. As a planning figure, assume **~3 MB/s per worker up to
+  about 16 workers** (the same conservative assumption the wizard's duration estimate uses); beyond that
+  the source or destination is almost always the limit, and the auto-throttle will back concurrency off if
+  Couchbase reports backpressure or the source rate-limits.
+- **Continuous sync** applies change events in micro-batches of `CDC_BATCH_SIZE` (default 200) through the
+  same writer pool, coalescing multiple changes to one key. Sustained change rates of a few thousand
+  mutations/s per migration are comfortable on a 2-4 core backend; replication lag in the dashboard tells
+  you when the stream is falling behind.
+- **Couchbase-to-Couchbase** migrations don't go through the pool at all: `cbbackupmgr` and XDCR run at
+  whatever the two clusters sustain, and the backend only orchestrates and polls.
+- **Multiple targets** multiply destination writes: a container mapped to three keyspaces costs three
+  writes per document.
+
+### Reference tiers
+
+Planning figures for one migration at a time, with the destination cluster already sized for the data.
+Bulk-copy times assume the 3 MB/s-per-worker figure and a source and destination that keep up.
+
+| Tier | Source size / change rate | `CONCURRENCY` | Backend CPU / RAM | Scratch + archive disk | Network to each DB | Bulk copy (est.) |
+|---|---|---|---|---|---|---|
+| Evaluation | up to 20 GB, < 500 mutations/s | 4-8 | 2 cores / 2 GB | 10 GB | 100 Mb/s | ~15-45 min |
+| Small | up to 100 GB, < 2 000 mutations/s | 8 | 2 cores / 4 GB | 50 GB | 1 Gb/s | ~1-2 h |
+| Medium | up to 500 GB, < 10 000 mutations/s | 16 | 4 cores / 8 GB | 100 GB (+ source bucket size for Couchbase sources) | 1-10 Gb/s | ~3-5 h |
+| Large | 1 TB+, 10 000-50 000 mutations/s | 16-32 | 8 cores / 16 GB | 200 GB+ (+ source bucket size) | 10 Gb/s, same region as both clusters | 6 h+; prefer bulk copy + continuous sync and a planned cutover |
+
+Above the Large tier, split the work into several migrations (one per container group) rather than raising
+concurrency further: each migration is an independent pipeline with its own checkpoints, verification and
+rollback, and the backend runs any number of them concurrently within its CPU budget.
+
+### Per-component requirements
+
+| Component | Purpose | Minimum | Recommended (Medium tier) | Notes |
+|---|---|---|---|---|
+| `backend` | API + migration engine | 1 core, 1 GB | 4 cores, 8 GB | RAM ≈ 300 MB + `CONCURRENCY` × `DEFAULT_BATCH_SIZE` × average document size × 3 (in-flight copies). 16 × 500 × 10 KB × 3 ≈ 250 MB; for 1 MB documents drop `DEFAULT_BATCH_SIZE` to 20-50. Single replica by design. |
+| `frontend` | nginx + static UI | 50 m, 64 MB | 0.5 core, 256 MB | Proxies `/api` and `/ws`; negligible load. |
+| `couchbase-memory` | assistant memory (not a migration endpoint) | 1 core, 2 GB | 2 cores, 4 GB | Evaluation node. For production point `MEMORY_CB_*` at an existing cluster or Capella. Tiny data volume. |
+| `qwen-service` (optional) | local LLM | off (`LLM_ENABLED=false`) | 4 cores, 6 GB (qwen3:4b) | ~3 GB models on disk; 8-10 GB RAM for `qwen3:8b`. A GPU helps response time only, never migration throughput. See "Running without the local LLM". |
+| Disk: `/data/state` | migration records, checkpoints | 100 MB | 1 GB | Small; grows with log tails and failed-event lists. Back it up with `STATE_ENCRYPTION_KEY`. |
+| Disk: `/data/scratch` | reconciliation + fallback key sets (SQLite) | 1 GB | 10 GB per 100 M keys | ~100 bytes per key, source and destination listed once per reconciliation run; deleted afterwards. |
+| Disk: `/data/cbbackupmgr-archives` | Couchbase-source bulk copies | source bucket size | 1.5 × source bucket size | One archive per migration; remove after the migration completes. |
+
+### Operations that scale with data size, not change rate
+
+- **Verification** at the end of a one-time load and at cutover counts every source key per container
+  (`VERIFY_SOURCE_COUNTS=true`): a full key scan at the source. Turn it off for very large containers if the
+  source can't afford the scan at cutover time, or run cutover in a quiet window.
+- **Delete reconciliation** (`RECONCILE_INTERVAL_MINUTES`, default 60) lists every source key and every
+  migrated destination key. Budget one scan of each per interval; for billion-key containers set the interval
+  to hours or run it manually before cutover.
+- **Cassandra and Couchbase CE/Capella sources** poll (`WRITETIME()` / `META().cas`): every poll scans the
+  table/collection for rows newer than the watermark, so index the polled column where you can and keep
+  `CASSANDRA_CDC_POLL_INTERVAL_S` / `COUCHBASE_CDC_POLL_INTERVAL_S` proportional to table size.
+- **Fallback sync** polls the destination's `META().cas` index and writes back in batches; its cost is the
+  post-cutover change rate, not the data size. Delete detection pages all destination keys every
+  `FALLBACK_DELETE_CHECK_INTERVAL_S` (default 300 s) -- raise it for very large keyspaces.
+- **Redis** keeps dirty keys in memory up to `REDIS_DIRTY_KEY_LIMIT` (1 M) before falling back to a rescan.
+
+### Tuning knobs
+
+| Setting | Default | Raise when | Lower when |
+|---|---|---|---|
+| `CONCURRENCY` (per migration, wizard) | 8 | destination is idle and source reads are fast | the auto-throttle keeps reducing it, or the source rate-limits |
+| `DEFAULT_BATCH_SIZE` | 500 | documents are small (< 2 KB) | documents are large (> 100 KB) or backend RAM is tight |
+| `CDC_BATCH_SIZE` / `CDC_BATCH_MAX_WAIT_MS` | 200 / 500 | change rate is high and lag matters less than throughput | you want the lowest replication lag |
+| `RECONCILE_INTERVAL_MINUTES` | 60 | key scans are cheap | containers are huge or the source is busy |
+| `VERIFY_SOURCE_COUNTS` | true | -- | a source-side key scan at cutover is unaffordable |
+| `MEMORY_CB_*`, `LLM_ENABLED` | bundled, on | -- | running lean: external memory cluster and no local LLM save ~5 GB RAM |
+
+The destination Couchbase cluster needs its own sizing (RAM quota for the working set, KV and index
+services, vBucket count for XDCR sources); follow Couchbase's sizing guidelines for the cluster. When the agent creates a bucket for you it uses the
+plan's `destination_bucket_ram_quota_mb` (API field, default 1024 MB); size the bucket yourself first if the
+working set needs more.
 
 ## How bulk copy + continuous sync works
 

@@ -157,13 +157,14 @@ llm:
   persistence:
     size: 20Gi
     storageClassName: ""
+  # Sized for qwen3:4b + nomic-embed-text; use ~8Gi/12Gi for qwen3:8b.
   resources:
     requests:
       cpu: "1"
-      memory: 6Gi
+      memory: 4Gi
     limits:
       cpu: "4"
-      memory: 12Gi
+      memory: 8Gi
   # e.g. {"nvidia.com/gpu": 1} under resources.limits plus a nodeSelector/toleration for GPU nodes.
   nodeSelector: {}
   tolerations: []
