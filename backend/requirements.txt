@@ -13,7 +13,7 @@ cryptography==44.0.0
 pymongo==4.10.1
 boto3==1.35.90
 redis==5.2.1
-cassandra-driver==3.29.2
+cassandra-driver==3.30.1
 azure-cosmos==4.9.0
 certifi==2024.12.14
 ldap3==2.9.1
