@@ -2,7 +2,10 @@
 # Container Toolkit installed only -- Docker Desktop on macOS/Windows cannot pass
 # through a GPU, so don't use this file there).
 #
-# Usage:
+# ./scripts/compose.sh selects this file automatically when Docker reports the
+# "nvidia" runtime (that includes Docker Desktop on Windows with WSL2 GPU support).
+#
+# Manual usage:
 #   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
 services:
   qwen-service:

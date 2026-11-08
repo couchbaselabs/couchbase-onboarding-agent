@@ -1,6 +1,11 @@
 import type {
   AgentChatResponse,
   AgentStatusResponse,
+  AuthSession,
+  AuthSessionInfo,
+  LlmProviderConfig,
+  LlmProviderSettings,
+  LlmProviderTestResult,
   ContainerMigrationSpec,
   CouchbaseConnectionConfig,
   CouchbaseTopologySnapshot,
@@ -96,9 +101,16 @@ export function wsProtocols(): string[] | undefined {
 }
 
 export interface PublicConfig {
+  /** A bearer (session or API token) is needed for /api. */
   auth_required: boolean;
+  /** The admin password login is on (ADMIN_LOGIN_ENABLED). */
+  login_enabled?: boolean;
+  /** No administrator password yet: show the first-run setup. */
+  setup_required?: boolean;
+  /** Setup must also present API_AUTH_TOKEN. */
+  bootstrap_token_required?: boolean;
   version: string;
-  /** false when the deployment runs without the local LLM (LLM_ENABLED=false). */
+  /** false when the deployment runs without the assistant (LLM_ENABLED=false). */
   llm_enabled?: boolean;
 }
 
@@ -167,6 +179,22 @@ export const api = {
     post<AgentChatResponse>("/api/agent/chat", { message, migration_id: migrationId, use_memory: true }),
 
   agentStatus: () => request<AgentStatusResponse>("/api/agent/status"),
+
+  // --- admin login ---
+  authSetup: (password: string, bootstrapToken?: string) =>
+    post<AuthSession>("/api/auth/setup", { password, bootstrap_token: bootstrapToken ?? "" }),
+  authLogin: (password: string) => post<AuthSession>("/api/auth/login", { password }),
+  authLogout: () => post<void>("/api/auth/logout"),
+  authSession: () => request<AuthSessionInfo>("/api/auth/session"),
+  changePassword: (currentPassword: string, newPassword: string) =>
+    post<void>("/api/auth/password", { current_password: currentPassword, new_password: newPassword }),
+
+  // --- assistant model provider ---
+  getProvider: () => request<LlmProviderSettings>("/api/agent/provider"),
+  testProvider: (config: LlmProviderConfig) => post<LlmProviderTestResult>("/api/agent/provider/test", config),
+  saveProvider: (config: LlmProviderConfig) =>
+    request<LlmProviderSettings>("/api/agent/provider", { method: "PUT", body: JSON.stringify(config) }),
+  resetProvider: () => request<LlmProviderSettings>("/api/agent/provider", { method: "DELETE" }),
 };
 
 export type { MigrationStrategy, ContainerMigrationSpec };

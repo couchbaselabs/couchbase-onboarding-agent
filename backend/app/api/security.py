@@ -1,8 +1,13 @@
-"""Optional bearer-token authentication for the REST API and websockets, with
-brute-force throttling and an auth audit trail.
+"""Bearer authentication for the REST API and websockets, with brute-force
+throttling and an auth audit trail.
 
-Enabled by setting API_AUTH_TOKEN. REST callers send `Authorization: Bearer
-<token>`. Websockets can't set headers from a browser, so /ws endpoints accept
+Two kinds of bearer are accepted, both as `Authorization: Bearer <token>`:
+  - the static API_AUTH_TOKEN from the environment (scripts, automation), and
+  - a browser session token issued by /api/auth/login once the administrator
+    has set a password (core/auth_store.py; ADMIN_LOGIN_ENABLED, on by default).
+While the admin login is enabled but no password has been set yet, the API is
+closed except for /api/auth/setup (and API_AUTH_TOKEN, if one is configured),
+so a fresh instance can't be used before it's claimed. Websockets can't set headers from a browser, so /ws endpoints accept
 the token as a WebSocket subprotocol (`Sec-WebSocket-Protocol: coa-auth, <token>`,
 which the UI uses -- it never appears in a URL or an access log) or, for older
 clients, as `?token=<token>`. /api/health and /api/config stay open for
@@ -26,6 +31,7 @@ from collections import deque
 from fastapi import HTTPException, Request, WebSocket, status
 
 from app.config import get_settings
+from app.core.auth_store import AuthStore
 
 audit = logging.getLogger("onboarding_agent.auth")
 
@@ -81,16 +87,22 @@ def client_ip(headers, client) -> str:
     return client.host if client else "unknown"
 
 
-def _token_ok(presented: str | None) -> bool:
+def _static_token_ok(presented: str | None) -> bool:
     expected = get_settings().api_auth_token
-    if not expected:
+    return bool(expected) and bool(presented) and hmac.compare_digest(presented.encode(), expected.encode())
+
+
+def _token_ok(presented: str | None) -> bool:
+    if not auth_enabled():
         return True
-    return bool(presented) and hmac.compare_digest(presented.encode(), expected.encode())
+    if _static_token_ok(presented):
+        return True
+    return AuthStore.instance().session_valid(presented)
 
 
 def _check(presented: str | None, ip: str, what: str) -> int | None:
     """None when authorized; otherwise the HTTP status to reject with."""
-    if not get_settings().api_auth_token:
+    if not auth_enabled():
         return None
     wait = throttle.retry_after(ip)
     if wait:
@@ -108,9 +120,19 @@ def _check(presented: str | None, ip: str, what: str) -> int | None:
     return status.HTTP_401_UNAUTHORIZED
 
 
-async def require_token(request: Request) -> None:
+def bearer_token(request: Request) -> str | None:
     header = request.headers.get("authorization", "")
-    presented = header[7:].strip() if header.lower().startswith("bearer ") else None
+    return header[7:].strip() if header.lower().startswith("bearer ") else None
+
+
+def auth_detail() -> str:
+    if AuthStore.instance().setup_required and not get_settings().api_auth_token:
+        return "Set the administrator password first (POST /api/auth/setup or open the UI)."
+    return "Missing or invalid API token / session."
+
+
+async def require_token(request: Request) -> None:
+    presented = bearer_token(request)
     ip = client_ip(request.headers, request.client)
     code = _check(presented, ip, f"{request.method} {request.url.path}")
     if code == status.HTTP_429_TOO_MANY_REQUESTS:
@@ -120,7 +142,7 @@ async def require_token(request: Request) -> None:
         )
     if code is not None:
         raise HTTPException(
-            status_code=code, detail="Missing or invalid API token.", headers={"WWW-Authenticate": "Bearer"},
+            status_code=code, detail=auth_detail(), headers={"WWW-Authenticate": "Bearer"},
         )
 
 
@@ -151,4 +173,6 @@ async def websocket_authorized(websocket: WebSocket) -> str | None:
 
 
 def auth_enabled() -> bool:
-    return bool(get_settings().api_auth_token)
+    """True when callers must present a bearer: a static token is configured
+    and/or the admin login is enabled (even before its password is set)."""
+    return bool(get_settings().api_auth_token) or AuthStore.instance().login_enabled

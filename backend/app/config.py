@@ -53,6 +53,19 @@ class Settings(BaseSettings):
     # (fine for a single container; set it explicitly -- e.g. from a Kubernetes
     # Secret -- anywhere the state volume might be copied or backed up).
     state_encryption_key: str = ""
+    # Admin login for the UI. On first visit the UI asks the administrator to
+    # set a password (stored as a scrypt hash next to the state file); after
+    # that every visit shows a login page and the API accepts the resulting
+    # session token as a bearer token alongside API_AUTH_TOKEN (which keeps
+    # working for scripts and, when set, is also required as a bootstrap token
+    # to set the first password -- so nobody else can claim an exposed
+    # instance before you do). Set to false to go back to token-only/open mode.
+    admin_login_enabled: bool = True
+    admin_password_min_length: int = 12
+    # Browser sessions: idle timeout (sliding) and absolute lifetime. In-memory
+    # and per-process, like the throttle -- a backend restart logs everyone out.
+    session_idle_timeout_s: int = 12 * 60 * 60
+    session_max_age_s: int = 7 * 24 * 60 * 60
 
     # --- Destination: Couchbase Server / Capella ---
     # Same supported range as the sibling couchbase-migration-agent project, since
@@ -91,6 +104,23 @@ class Settings(BaseSettings):
     qwen_model_name: str = "qwen3:4b"
     qwen_embedding_model_name: str = "nomic-embed-text"
     qwen_request_timeout_s: int = 120
+
+    # --- Bring your own model (optional; see core/llm_settings.py) ---
+    # Environment defaults for the assistant's provider. Whatever an admin saves
+    # on the UI's Settings page (or at first-run setup) takes precedence over
+    # these. `local` keeps the bundled Ollama service above; the others send
+    # prompts (validation messages, migration stats, the user's questions --
+    # never database credentials) to that provider.
+    # LLM_PROVIDER: local | openai | openai_compatible | azure_openai | anthropic
+    llm_provider: str = "local"
+    llm_model: str = ""              # chat model (Azure: deployment name)
+    llm_base_url: str = ""           # required for openai_compatible / azure_openai
+    llm_api_key: str = ""
+    llm_azure_api_version: str = "2024-10-21"
+    # local | provider | none -- where agent-memory embeddings come from when a
+    # hosted provider is selected (MEMORY_EMBEDDING_DIMS must match the model).
+    llm_embedding_source: str = "local"
+    llm_embedding_model: str = ""
 
     # --- Capella Management API (destination auto-provisioning) ---
     capella_api_base_url: str = "https://cloudapi.cloud.couchbase.com/v4"

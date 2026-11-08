@@ -6,11 +6,13 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import __version__
-from app.api.routes import agent, migrations, sources, stats
+from app.api.routes import agent, auth, migrations, sources, stats
 from app.api.security import auth_enabled, require_token
 from app.config import get_settings
 from app.core import runner
+from app.core.auth_store import AuthStore
 from app.core.connectors.registry import get_connector
+from app.core.llm_settings import LlmSettingsStore
 from app.core.migration_engine import MigrationEngine, uses_xdcr
 from app.core.store import MigrationStore
 from app.models.enums import CONTINUOUS_STRATEGIES, COUCHBASE_SOURCE_TYPES, MigrationPhase, SourceType, SyncStage
@@ -41,10 +43,21 @@ def startup_security_warnings() -> list[str]:
     out: list[str] = []
     if not auth_enabled():
         out.append(
-            "API_AUTH_TOKEN is not set: the API is open to anyone who can reach it. Set it for any "
-            "deployment that isn't bound to localhost."
+            "ADMIN_LOGIN_ENABLED=false and API_AUTH_TOKEN is not set: the API is open to anyone who can "
+            "reach it. Only run like this bound to localhost."
         )
-    elif len(settings.api_auth_token) < 32:
+    elif AuthStore.instance().setup_required and not settings.api_auth_token:
+        out.append(
+            "No administrator password yet: the first visitor to the UI will be asked to set one. Set "
+            "API_AUTH_TOKEN as well so that setting it requires the token (recommended anywhere but localhost)."
+        )
+    llm = LlmSettingsStore.instance().effective()
+    if settings.llm_enabled and not llm.is_local:
+        out.append(
+            f"The assistant uses a hosted model ({llm.label}, '{llm.effective_model}'): validation messages, "
+            "migration stats and chat questions are sent to that provider. Database credentials never are."
+        )
+    elif settings.api_auth_token and len(settings.api_auth_token) < 32:
         out.append(
             "API_AUTH_TOKEN is shorter than 32 characters. Use a random token of at least 32 characters "
             "(e.g. `openssl rand -hex 32`); the API grants access to every stored database credential."
@@ -123,6 +136,9 @@ app.include_router(sources.router, prefix="/api/sources", tags=["sources"], depe
 app.include_router(migrations.router, prefix="/api/migrations", tags=["migrations"], dependencies=_protected)
 app.include_router(stats.router, prefix="/api/stats", tags=["stats"], dependencies=_protected)
 app.include_router(agent.router, prefix="/api/agent", tags=["agent"], dependencies=_protected)
+# Login endpoints issue the bearer, so they can't require one; each handler
+# enforces what it needs (api/routes/auth.py).
+app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(ws_router, tags=["websocket"])
 
 
@@ -133,9 +149,19 @@ async def health() -> dict:
 
 @app.get("/api/config")
 async def public_config() -> dict:
-    """Unauthenticated: tells the UI whether to ask for an API token and
-    whether the assistant (local LLM) is available in this deployment."""
-    return {"auth_required": auth_enabled(), "version": __version__, "llm_enabled": settings.llm_enabled}
+    """Unauthenticated: tells the UI whether to log in (and whether the
+    administrator password still has to be set), and whether the assistant is
+    available in this deployment."""
+    store = AuthStore.instance()
+    return {
+        "auth_required": auth_enabled(),
+        "login_enabled": store.login_enabled,
+        "setup_required": store.setup_required,
+        # The first-run setup form must also ask for API_AUTH_TOKEN when one is configured.
+        "bootstrap_token_required": store.setup_required and bool(settings.api_auth_token),
+        "version": __version__,
+        "llm_enabled": settings.llm_enabled,
+    }
 
 
 _TLS_FIELDS = ["use_tls", "ca_cert_pem", "tls_skip_verify"]

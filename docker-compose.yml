@@ -63,8 +63,10 @@ services:
   # .env does with COMPOSE_PROFILES=llm (the default in env.example). To run
   # without the assistant -- no model download, ~3 GB less RAM -- set
   # COMPOSE_PROFILES= (empty) and LLM_ENABLED=false in .env before building.
-  # CPU by default. For an NVIDIA GPU on Linux:
-  #   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up
+  # CPU by default. `./scripts/compose.sh up` detects a GPU and adds the right
+  # override (docker-compose.gpu.yml for NVIDIA, docker-compose.rocm.yml for AMD,
+  # docker-compose.host-llm.yml for Apple Silicon via a host Ollama); or pass
+  # one with -f by hand. The container logs "LLM compute: GPU|CPU" at startup.
   qwen-service:
     profiles: [llm]
     build: ./qwen-service

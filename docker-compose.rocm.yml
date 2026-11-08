@@ -1,0 +1,24 @@
+# Optional override: give qwen-service an AMD GPU via ROCm (Linux hosts with the
+# amdgpu driver only -- /dev/kfd and /dev/dri must exist). ./scripts/compose.sh
+# selects this file automatically when it finds them.
+#
+# Manual usage:
+#   docker compose -f docker-compose.yml -f docker-compose.rocm.yml up --build
+#
+# Ollama's ROCm build is a separate image tag, so this also changes the base
+# image qwen-service is built from. Pre-RDNA/CDNA cards may need
+# HSA_OVERRIDE_GFX_VERSION (e.g. 10.3.0 for RX 6000-series); see Ollama's GPU docs.
+services:
+  qwen-service:
+    profiles: [llm]
+    build:
+      context: ./qwen-service
+      args:
+        OLLAMA_IMAGE_TAG: 0.6.8-rocm
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - video
+    # environment:
+    #   HSA_OVERRIDE_GFX_VERSION: "10.3.0"

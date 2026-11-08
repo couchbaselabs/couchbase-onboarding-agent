@@ -3,7 +3,12 @@
 # embeddings: /api/embeddings) so the onboarding agent's reasoning and vector-memory
 # embeddings never leave the Docker network -- important here specifically because this app
 # routinely holds credentials for five different production databases at once.
-FROM ollama/ollama:0.6.8
+# Pinned CUDA-capable default; docker-compose.rocm.yml swaps in the ROCm tag.
+# Ollama detects an NVIDIA or AMD GPU at startup on its own -- the container just
+# has to be given the device (docker-compose.gpu.yml / docker-compose.rocm.yml,
+# chosen automatically by scripts/compose.sh). Without one it runs on CPU.
+ARG OLLAMA_IMAGE_TAG=0.6.8
+FROM ollama/ollama:${OLLAMA_IMAGE_TAG}
 
 ENV OLLAMA_HOST=0.0.0.0:11434
 # Overridden at runtime by docker-compose (QWEN_MODEL_NAME in .env), so the pulled

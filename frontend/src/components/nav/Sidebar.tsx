@@ -52,6 +52,12 @@ export default function Sidebar() {
           </span>
           <span>New Migration</span>
         </NavLink>
+        <NavLink to="/settings" className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}>
+          <span className="nav-icon" aria-hidden="true">
+            ⚙
+          </span>
+          <span>Settings</span>
+        </NavLink>
       </nav>
 
       <div className="nav-section">

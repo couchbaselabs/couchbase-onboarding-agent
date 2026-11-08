@@ -1,5 +1,5 @@
 import { useAgentStatus } from "@/hooks/useAgentStatus";
-import type { AgentHealthState } from "@/api/types";
+import type { AgentHealthState, LlmCompute } from "@/api/types";
 
 const DOT_CLASS: Record<AgentHealthState, string> = {
   ready: "status-dot",
@@ -15,12 +15,28 @@ const STATE_LABEL: Record<AgentHealthState, string> = {
   disabled: "Assistant off (migrations run)",
 };
 
+const COMPUTE_TAG: Record<LlmCompute, string | null> = {
+  gpu: "GPU",
+  cpu: "CPU",
+  partial: "GPU+CPU",
+  unknown: null, // nothing loaded yet; don't guess
+};
+
 export default function AgentStatusIndicator() {
-  const { status, detail } = useAgentStatus();
+  const { status, detail, provider_label, model, local, compute, compute_detail } = useAgentStatus();
+  const computeTag = status === "ready" && local !== false && compute ? COMPUTE_TAG[compute] : null;
+  const titleParts = [
+    model ? `${provider_label ?? ""} ${model}${local === false ? " (hosted)" : ""} -- ${detail}` : detail,
+    compute_detail,
+  ].filter(Boolean);
+  const label = status === "ready" && local === false
+    ? `Assistant ready (${provider_label ?? "hosted"})`
+    : STATE_LABEL[status];
   return (
-    <div className="status-pill" style={{ marginTop: 10 }} title={detail} role="status">
+    <div className="status-pill" style={{ marginTop: 10 }} title={titleParts.join("\n")} role="status">
       <span className={DOT_CLASS[status]} />
-      {STATE_LABEL[status]}
+      {label}
+      {computeTag && <span className="status-compute-tag">{computeTag}</span>}
     </div>
   );
 }

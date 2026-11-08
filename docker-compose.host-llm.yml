@@ -1,0 +1,22 @@
+# Optional override: use an Ollama running on the host machine instead of the
+# qwen-service container. This is how Apple Silicon Macs get GPU (Metal)
+# acceleration -- Docker Desktop cannot pass the GPU into a container, but
+# Ollama installed on the Mac uses it natively. ./scripts/compose.sh selects
+# this file on arm64 macOS when `ollama` is installed, starts it if needed and
+# pulls the configured models on the host.
+#
+# Manual usage (Ollama must be listening on 127.0.0.1:11434 with the models pulled):
+#   docker compose -f docker-compose.yml -f docker-compose.host-llm.yml up --build
+#
+# Also usable on Linux for an Ollama you already run outside Docker.
+services:
+  qwen-service:
+    profiles: [llm]
+    # Keep the service defined (the profile still references it) but start no container.
+    deploy:
+      replicas: 0
+  backend:
+    environment:
+      QWEN_BASE_URL: http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

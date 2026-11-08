@@ -1,7 +1,7 @@
 """Helper for turning migration events/context into embeddable text + vectors."""
 from __future__ import annotations
 
-from app.core.qwen_agent import QwenAgentClient
+from app.core.llm import LlmClient
 
 
 def summarize_for_embedding(kind: str, payload: dict) -> str:
@@ -16,5 +16,5 @@ def summarize_for_embedding(kind: str, payload: dict) -> str:
 
 
 async def embed_text(text: str) -> list[float]:
-    client = QwenAgentClient()
+    client = LlmClient()
     return await client.embed(text)

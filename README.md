@@ -83,7 +83,7 @@ cp env.example .env
 # Edit .env:
 #   MEMORY_CB_PASSWORD   required -- admin password for the agent-memory container
 #   API_AUTH_TOKEN       recommended -- e.g. `openssl rand -hex 32`; the UI asks for it
-docker compose up --build
+docker compose up --build            # or: ./scripts/compose.sh up --build  (uses a GPU if you have one)
 ```
 
 Then open <http://localhost:5173>. The API is at <http://localhost:8000> (OpenAPI docs at `/docs`). All
@@ -492,6 +492,34 @@ similarity. Everything else -- validation, the replication-mode recommendation, 
 sync, cutover, rollback, fallback and failback -- is unchanged. With Helm, set `llm.enabled: false` (and
 no `llm.externalUrl`). Turn it back on later with `COMPOSE_PROFILES=llm`, `LLM_ENABLED=true` and
 `docker compose up --build`.
+
+### GPU acceleration
+
+Nothing on a migration's critical path touches the model, so a GPU changes only how fast the assistant
+answers (seconds instead of tens of seconds for `qwen3:8b`) -- never migration throughput. Ollama
+inside `qwen-service` detects an NVIDIA or AMD GPU by itself; what it can't do is reach a GPU Docker
+hasn't handed to the container. `./scripts/compose.sh` makes that decision for you and then runs
+`docker compose` with the same arguments you'd normally pass:
+
+```bash
+./scripts/compose.sh up --build      # also: logs -f qwen-service, down, ps ...
+```
+
+| Detected | Condition | What it does |
+|---|---|---|
+| `nvidia` | Docker lists the `nvidia` runtime (Linux + [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/), or Docker Desktop on Windows/WSL2) | adds `docker-compose.gpu.yml`: all GPUs reserved for `qwen-service` |
+| `rocm` | Linux with `/dev/kfd` and `/dev/dri` (amdgpu driver) | adds `docker-compose.rocm.yml`: builds from the `ollama/ollama:*-rocm` image and passes the devices through |
+| `host` | Apple Silicon Mac with `ollama` installed | adds `docker-compose.host-llm.yml`: Docker Desktop can't pass the GPU through, so the script starts Ollama on the Mac (Metal), pulls the models there and points the backend at `host.docker.internal:11434`; `qwen-service` isn't started |
+| `cpu` | anything else | plain `docker-compose.yml` |
+
+Force a mode with `LLM_COMPUTE=nvidia|rocm|host|cpu` in `.env` or the environment. The override files
+work without the script too (`docker compose -f docker-compose.yml -f docker-compose.gpu.yml up`).
+Either way, `qwen-service` logs a single `==> LLM compute: GPU` / `CPU` line at startup, with the device
+name and memory when it found one -- if you expected a GPU and see `CPU`, the container wasn't given the
+device. Once the first chat or embedding request has loaded the model, the sidebar's assistant status
+shows a `GPU`, `CPU` or `GPU+CPU` tag (the last means the model didn't fit in VRAM and spilled to CPU);
+`/api/agent/status` carries the same as `compute` / `compute_detail`, read from Ollama's `/api/ps`. On Kubernetes, request the GPU in `llm.resources.limits` (`nvidia.com/gpu: 1`) plus a node
+selector/toleration in the Helm values; Ollama picks it up the same way.
 
 ### Changing the model
 

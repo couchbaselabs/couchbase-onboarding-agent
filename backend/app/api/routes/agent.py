@@ -6,12 +6,21 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, HTTPException
+from pydantic import ValidationError
 
-from app.core.qwen_agent import LlmDisabledError, QwenAgentClient
+from app.core.llm import LlmClient, LlmDisabledError
+from app.core.llm_settings import (
+    PROVIDER_LABELS,
+    EmbeddingSource,
+    LlmProvider,
+    LlmProviderConfig,
+    LlmSettingsStore,
+)
 from app.core.recommendation import recommend_replication_mode
 from app.core.store import MigrationStore
 from app.memory.couchbase_memory import AgentMemoryStore
 from app.models.schemas import (
+    REDACTED,
     AgentChatRequest,
     AgentChatResponse,
     AgentStatusResponse,
@@ -25,8 +34,73 @@ router = APIRouter()
 
 @router.get("/status", response_model=AgentStatusResponse)
 async def status() -> AgentStatusResponse:
-    state, detail = await QwenAgentClient().status()
-    return AgentStatusResponse(status=state, detail=detail)
+    return AgentStatusResponse(**await LlmClient().status_payload())
+
+
+# ---------------------------------------------------------------------------
+# Assistant model provider (bring your own model)
+# ---------------------------------------------------------------------------
+
+def _provider_payload() -> dict:
+    store = LlmSettingsStore.instance()
+    return {"config": store.effective().redacted(), "source": store.source()}
+
+
+@router.get("/provider")
+async def get_provider() -> dict:
+    """The configured assistant model (API key redacted) and whether it came
+    from the UI (`source: ui`) or the environment defaults (`source: env`)."""
+    return {
+        **_provider_payload(),
+        "providers": [
+            {
+                "value": p.value, "label": PROVIDER_LABELS[p],
+                "needs_api_key": p not in (LlmProvider.LOCAL, LlmProvider.OPENAI_COMPATIBLE),
+                "needs_base_url": p in (LlmProvider.OPENAI_COMPATIBLE, LlmProvider.AZURE_OPENAI),
+                "has_embeddings": p in (LlmProvider.OPENAI, LlmProvider.OPENAI_COMPATIBLE, LlmProvider.AZURE_OPENAI),
+            }
+            for p in LlmProvider
+        ],
+        "embedding_sources": [e.value for e in EmbeddingSource],
+    }
+
+
+def _merge(payload: dict) -> LlmProviderConfig:
+    """Build a config from a PUT/test body; a redacted api_key means "keep the
+    one already saved" so the UI never has to round-trip the secret."""
+    if payload.get("api_key") in (REDACTED, None):
+        payload = {**payload, "api_key": LlmSettingsStore.instance().effective().api_key}
+    try:
+        return LlmProviderConfig.model_validate(payload)
+    except ValidationError as exc:
+        raise HTTPException(422, "; ".join(e.get("msg", "") for e in exc.errors())) from exc
+
+
+@router.post("/provider/test")
+async def test_provider(payload: dict) -> dict:
+    """One real round trip against the given (unsaved) configuration."""
+    config = _merge(payload)
+    problems = config.problems()
+    if problems:
+        return {"ok": False, "detail": " ".join(problems)}
+    return await LlmClient(config).test()
+
+
+@router.put("/provider")
+async def put_provider(payload: dict) -> dict:
+    config = _merge(payload)
+    problems = config.problems()
+    if problems:
+        raise HTTPException(422, " ".join(problems))
+    LlmSettingsStore.instance().save(config)
+    return _provider_payload()
+
+
+@router.delete("/provider")
+async def reset_provider() -> dict:
+    """Forget the UI choice and go back to the environment defaults."""
+    LlmSettingsStore.instance().reset()
+    return _provider_payload()
 
 
 @router.post("/chat", response_model=AgentChatResponse)
@@ -57,13 +131,13 @@ async def chat(req: AgentChatRequest) -> AgentChatResponse:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Memory recall failed: %s", exc)
 
-    client = QwenAgentClient()
+    client = LlmClient()
     try:
         reply = await client.chat([{"role": "user", "content": req.message}], context=context)
     except LlmDisabledError as exc:
         raise HTTPException(503, str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(503, f"Local LLM (Qwen) unavailable: {exc}") from exc
+        raise HTTPException(503, f"Assistant model ({client.config.label}) unavailable: {exc}") from exc
 
     try:
         await AgentMemoryStore.instance().remember(

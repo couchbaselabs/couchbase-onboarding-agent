@@ -342,4 +342,73 @@ export type AgentHealthState = "ready" | "waiting" | "error" | "disabled";
 export interface AgentStatusResponse {
   status: AgentHealthState;
   detail: string;
+  /** Which model backs the assistant (core/llm_settings.py). */
+  provider?: LlmProvider;
+  provider_label?: string;
+  model?: string;
+  /** false when prompts leave this host (a hosted provider is configured). */
+  local?: boolean;
+  /** Local provider only, once ready: where Ollama has the model loaded
+   * (from /api/ps). "unknown" until the first request loads it. */
+  compute?: LlmCompute;
+  compute_detail?: string;
+}
+
+export type LlmCompute = "gpu" | "cpu" | "partial" | "unknown";
+
+// ---------------------------------------------------------------------------
+// Assistant model provider (bring your own model)
+// ---------------------------------------------------------------------------
+
+export type LlmProvider = "local" | "openai" | "openai_compatible" | "azure_openai" | "anthropic";
+export type EmbeddingSource = "local" | "provider" | "none";
+
+export interface LlmProviderConfig {
+  provider: LlmProvider;
+  model: string;
+  base_url: string;
+  /** "********" when a key is stored; send it back unchanged to keep it. */
+  api_key: string;
+  api_key_set?: boolean;
+  api_version: string;
+  embedding_source: EmbeddingSource;
+  embedding_model: string;
+  request_timeout_s: number;
+  max_tokens: number;
+}
+
+export interface LlmProviderInfo {
+  value: LlmProvider;
+  label: string;
+  needs_api_key: boolean;
+  needs_base_url: boolean;
+  has_embeddings: boolean;
+}
+
+export interface LlmProviderSettings {
+  config: LlmProviderConfig;
+  /** "ui" when an admin saved a choice; "env" for the LLM_* environment defaults. */
+  source: "ui" | "env";
+  providers?: LlmProviderInfo[];
+  embedding_sources?: EmbeddingSource[];
+}
+
+export interface LlmProviderTestResult {
+  ok: boolean;
+  detail: string;
+  chat_ms?: number;
+  embedding_dims?: number | null;
+}
+
+export interface AuthSession {
+  token: string;
+  /** epoch seconds; idle timeout, extended on every request */
+  expires_at: number;
+}
+
+export interface AuthSessionInfo {
+  authenticated: boolean;
+  method: "open" | "token" | "session";
+  login_enabled: boolean;
+  password_set_at: string | null;
 }

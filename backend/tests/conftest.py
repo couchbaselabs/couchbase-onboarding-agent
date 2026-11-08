@@ -14,6 +14,8 @@ os.environ.setdefault("CDC_RETRY_MAX_BACKOFF_S", "1")
 os.environ.setdefault("CDC_WRITE_RETRIES", "1")
 os.environ.setdefault("VERIFY_SOURCE_COUNTS", "true")
 os.environ.setdefault("AUTO_RESUME_ON_STARTUP", "false")
+# Existing API tests exercise token-only / open mode; tests/test_auth.py turns the login on explicitly.
+os.environ.setdefault("ADMIN_LOGIN_ENABLED", "false")
 
 import pytest  # noqa: E402
 

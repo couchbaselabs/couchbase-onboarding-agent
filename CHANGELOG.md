@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **GPU auto-detection for the local LLM.** `./scripts/compose.sh` wraps `docker compose` and
+  picks the right override for the machine it runs on: NVIDIA (`docker-compose.gpu.yml`), AMD
+  ROCm (new `docker-compose.rocm.yml`, ROCm Ollama image via `OLLAMA_IMAGE_TAG` build arg) or,
+  on Apple Silicon, an Ollama running on the Mac itself (new `docker-compose.host-llm.yml`,
+  Metal) -- CPU otherwise. `LLM_COMPUTE=auto|nvidia|rocm|host|cpu` forces a mode. `qwen-service`
+  now logs `==> LLM compute: GPU|CPU` (with device name/memory) at startup, and once a model is
+  loaded `/api/agent/status` reports `compute` (`gpu`/`cpu`/`partial`) from Ollama's `/api/ps`,
+  shown as a tag on the sidebar's assistant status.
+
 ## 1.0.0 - 2026-11-07
 
 First tagged release of the Couchbase Labs Onboarding Agent.

@@ -41,6 +41,8 @@ def validate_bucket_name(name: str) -> str:
 # destination passwords back to a browser.
 SECRET_FIELDS: frozenset[str] = frozenset({
     "password", "aws_secret_access_key", "aws_session_token", "cosmos_key", "ca_cert_pem",
+    # assistant model provider key (core/llm_settings.py)
+    "api_key",
 })
 REDACTED = "********"
 
@@ -599,12 +601,19 @@ class AgentChatResponse(BaseModel):
 
 
 class AgentStatusResponse(BaseModel):
-    """Reachability of the local Qwen LLM the chat/reasoning agent runs on --
-    polled by the sidebar status indicator. 'waiting' specifically means the
-    server is up but the model is still being pulled (first-boot only)."""
+    """Reachability of the model the assistant runs on -- polled by the sidebar
+    status indicator. 'waiting' specifically means the local server is up but
+    the model is still being pulled (first-boot only)."""
 
-    status: str  # "ready" | "waiting" | "error"
+    status: str  # "ready" | "waiting" | "error" | "disabled"
     detail: str
+    provider: str = "local"   # LlmProvider value
+    provider_label: str = ""
+    model: str = ""
+    local: bool = True        # False when prompts leave this host
+    # Local provider only, once ready: where Ollama has the model loaded.
+    compute: str | None = None          # "gpu" | "cpu" | "partial" | "unknown"
+    compute_detail: str | None = None
 
 
 # ---------------------------------------------------------------------------

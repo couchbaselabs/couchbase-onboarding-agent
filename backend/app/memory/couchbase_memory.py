@@ -31,6 +31,7 @@ from couchbase.options import ClusterOptions, SearchOptions
 from couchbase.vector_search import VectorQuery, VectorSearch
 
 from app.config import get_settings
+from app.core.llm import LlmClient
 from app.memory.embeddings import embed_text, summarize_for_embedding
 
 logger = logging.getLogger(__name__)
@@ -91,7 +92,7 @@ class AgentMemoryStore:
         """Embed and persist a memory event. Returns the memory document id."""
         text = summarize_for_embedding(kind, payload)
         vector: list[float] = []
-        if self.settings.llm_enabled:
+        if LlmClient().embeddings_enabled:
             try:
                 vector = await embed_text(text)
             except Exception as exc:  # noqa: BLE001
@@ -110,8 +111,9 @@ class AgentMemoryStore:
         return doc_id
 
     async def recall(self, query_text: str, limit: int = 5) -> list[dict[str, Any]]:
-        if not self.settings.llm_enabled:
-            # No embeddings without the LLM: hand back the most recent events
+        if not LlmClient().embeddings_enabled:
+            # No embeddings (assistant off, or a hosted provider with embeddings
+            # turned off): hand back the most recent events
             # instead of similar ones, so callers still get useful context.
             try:
                 return await asyncio.to_thread(self._recall_recent, limit)
