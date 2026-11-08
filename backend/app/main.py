@@ -6,13 +6,16 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import __version__
-from app.api.routes import agent, auth, migrations, sources, stats
+from app.api.routes import agent, auth, migrations, settings_security, sources, stats
 from app.api.security import auth_enabled, require_token
 from app.config import get_settings
 from app.core import runner
 from app.core.auth_store import AuthStore
+from app.core.certs import TrustStore
 from app.core.connectors.registry import get_connector
+from app.core.ldap_auth import LdapStore
 from app.core.llm_settings import LlmSettingsStore
+from app.core.log_forwarding import Forwarder, ForwardStore
 from app.core.migration_engine import MigrationEngine, uses_xdcr
 from app.core.store import MigrationStore
 from app.models.enums import CONTINUOUS_STRATEGIES, COUCHBASE_SOURCE_TYPES, MigrationPhase, SourceType, SyncStage
@@ -31,6 +34,8 @@ async def lifespan(_: FastAPI):
     logger.info("%s %s starting up (env=%s)", settings.app_name, __version__, settings.environment)
     for warning in startup_security_warnings():
         logger.warning(warning)
+    TrustStore.instance()  # exports the uploaded-CA bundle to SSL_CERT_FILE & co.
+    Forwarder.instance().apply(ForwardStore.instance().config)  # Settings -> Log forwarding
     await _recover_interrupted_migrations()
     yield
     await runner.cancel_all()
@@ -136,6 +141,7 @@ app.include_router(sources.router, prefix="/api/sources", tags=["sources"], depe
 app.include_router(migrations.router, prefix="/api/migrations", tags=["migrations"], dependencies=_protected)
 app.include_router(stats.router, prefix="/api/stats", tags=["stats"], dependencies=_protected)
 app.include_router(agent.router, prefix="/api/agent", tags=["agent"], dependencies=_protected)
+app.include_router(settings_security.router, prefix="/api/settings", tags=["settings"], dependencies=_protected)
 # Login endpoints issue the bearer, so they can't require one; each handler
 # enforces what it needs (api/routes/auth.py).
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
@@ -161,6 +167,8 @@ async def public_config() -> dict:
         "bootstrap_token_required": store.setup_required and bool(settings.api_auth_token),
         "version": __version__,
         "llm_enabled": settings.llm_enabled,
+        # Directory sign-in is on: the login form says so (local or directory account).
+        "ldap_enabled": LdapStore.instance().enabled,
     }
 
 

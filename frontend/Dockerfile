@@ -33,11 +33,13 @@ RUN npm run build && \
     chmod 0755 tls-entrypoint.sh
 
 FROM nginxinc/nginx-unprivileged:1.27-alpine AS serve
-# openssl for the self-signed fallback; /etc/nginx/tls writable by the nginx
-# user so the generated pair can live there when nothing is mounted.
+# openssl for the self-signed fallback. /etc/nginx/tls is owned by the nginx
+# user and group-writable for gid 10001 (the backend's user) so that, with the
+# directory shared between the two containers (docker-compose), a certificate
+# uploaded under Settings -> Certificates can be dropped here by the backend.
 USER root
 RUN apk add --no-cache openssl && \
-    mkdir -p /etc/nginx/tls && chown 101:0 /etc/nginx/tls && chmod 0770 /etc/nginx/tls
+    mkdir -p /etc/nginx/tls && chown 101:10001 /etc/nginx/tls && chmod 2770 /etc/nginx/tls
 USER 101
 ENV BACKEND_URL=http://backend:8000 \
     TLS_ENABLED=true \

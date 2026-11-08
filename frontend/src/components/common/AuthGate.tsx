@@ -1,20 +1,29 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, ApiError, AUTH_REQUIRED_EVENT, getToken, PublicConfig, setToken } from "@/api/client";
+import type { AuthSessionInfo, Permission } from "@/api/types";
 import { BrandMark } from "@/assets/CouchbaseLogo";
 import AssistantModelForm from "@/components/settings/AssistantModelForm";
+import { fetchSession, logout, SessionContext } from "@/hooks/useAuthSession";
 
 /** Gatekeeper in front of the app:
  *  - first visit with the admin login on and no password yet -> first-run setup
  *    (set the administrator password, then optionally pick the assistant model);
  *  - otherwise, when a bearer is required and none is held -> login page
  *    (administrator password, or an API token for token-only deployments).
- * The session/token lives in sessionStorage for this tab only. */
+ * The session/token lives in sessionStorage for this tab only. Once open, the
+ * signed-in principal (username, role, permissions) is provided to the app via
+ * SessionContext so navigation and settings can follow the role. */
 
 type Gate = "checking" | "setup" | "login" | "open";
 
 export default function AuthGate({ children }: { children: React.ReactNode }) {
   const [gate, setGate] = useState<Gate>("checking");
   const [cfg, setCfg] = useState<PublicConfig | null>(null);
+  const [session, setSession] = useState<AuthSessionInfo | null>(null);
+
+  const refresh = useCallback(async () => {
+    setSession(await fetchSession());
+  }, []);
 
   async function evaluate() {
     try {
@@ -22,11 +31,25 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
       setCfg(next);
       if (next.setup_required) setGate("setup");
       else if (next.auth_required && !getToken()) setGate("login");
-      else setGate("open");
+      else {
+        if (next.auth_required) await refresh();
+        setGate("open");
+      }
     } catch {
       setGate("open");
     }
   }
+
+  const value = useMemo(
+    () => ({
+      session,
+      // No session (auth off / not loaded yet) -> nothing is hidden; the API decides.
+      can: (p: Permission) => (session ? session.permissions.includes(p) : true),
+      refresh,
+      logout,
+    }),
+    [session, refresh],
+  );
 
   useEffect(() => {
     evaluate();
@@ -39,7 +62,7 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
   }, []);
 
   if (gate === "checking") return null;
-  if (gate === "open") return <>{children}</>;
+  if (gate === "open") return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
   if (gate === "setup") return <FirstRunSetup cfg={cfg} onFinished={() => window.location.reload()} />;
   return <LoginPage cfg={cfg} onLoggedIn={() => window.location.reload()} />;
 }
@@ -180,6 +203,7 @@ function FirstRunSetup({ cfg, onFinished }: { cfg: PublicConfig | null; onFinish
 function LoginPage({ cfg, onLoggedIn }: { cfg: PublicConfig | null; onLoggedIn: () => void }) {
   const loginEnabled = cfg?.login_enabled !== false;
   const [mode, setMode] = useState<"password" | "token">(loginEnabled ? "password" : "token");
+  const [username, setUsername] = useState("admin");
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -190,7 +214,7 @@ function LoginPage({ cfg, onLoggedIn }: { cfg: PublicConfig | null; onLoggedIn: 
     setError(null);
     try {
       if (mode === "password") {
-        const session = await api.authLogin(value);
+        const session = await api.authLogin(username.trim().toLowerCase(), value);
         setToken(session.token);
       } else {
         setToken(value.trim());
@@ -200,7 +224,7 @@ function LoginPage({ cfg, onLoggedIn }: { cfg: PublicConfig | null; onLoggedIn: 
     } catch (err) {
       setToken(null);
       if (err instanceof ApiError && err.status === 429) setError(err.message);
-      else setError(mode === "password" ? "Wrong password." : "That token wasn't accepted.");
+      else setError(mode === "password" ? "Wrong username or password." : "That token wasn't accepted.");
     } finally {
       setBusy(false);
     }
@@ -213,9 +237,25 @@ function LoginPage({ cfg, onLoggedIn }: { cfg: PublicConfig | null; onLoggedIn: 
         <h1 className="login-title">{mode === "password" ? "Log in" : "API token required"}</h1>
         <p className="login-subtitle">
           {mode === "password"
-            ? "Enter the administrator password. You stay logged in for this browser tab."
+            ? cfg?.ldap_enabled
+              ? "Sign in with your local account or your directory (LDAP) username and password. You stay logged in for this browser tab."
+              : "Sign in with your username and password. You stay logged in for this browser tab."
             : "This deployment protects its API with a token (the backend's API_AUTH_TOKEN). Paste it to continue; it's kept only for this browser tab."}
         </p>
+        {mode === "password" && (
+          <div className="field" style={{ marginBottom: 14 }}>
+            <label htmlFor="login-username">Username</label>
+            <input
+              id="login-username"
+              type="text"
+              autoComplete="username"
+              autoCapitalize="none"
+              spellCheck={false}
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+            />
+          </div>
+        )}
         <div className="field" style={{ marginBottom: 14 }}>
           <label htmlFor="login-secret">{mode === "password" ? "Password" : "API token"}</label>
           <input
@@ -232,8 +272,12 @@ function LoginPage({ cfg, onLoggedIn }: { cfg: PublicConfig | null; onLoggedIn: 
             {error}
           </div>
         )}
-        <button className="btn btn-primary login-submit" type="submit" disabled={busy || !value.trim()}>
-          {busy ? "Checking..." : "Continue"}
+        <button
+          className="btn btn-primary login-submit"
+          type="submit"
+          disabled={busy || !value.trim() || (mode === "password" && !username.trim())}
+        >
+          {busy ? "Checking..." : mode === "password" ? "Log in" : "Continue"}
         </button>
         {loginEnabled && (
           <button

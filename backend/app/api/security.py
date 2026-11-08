@@ -7,7 +7,10 @@ Two kinds of bearer are accepted, both as `Authorization: Bearer <token>`:
     has set a password (core/auth_store.py; ADMIN_LOGIN_ENABLED, on by default).
 While the admin login is enabled but no password has been set yet, the API is
 closed except for /api/auth/setup (and API_AUTH_TOKEN, if one is configured),
-so a fresh instance can't be used before it's claimed. Websockets can't set headers from a browser, so /ws endpoints accept
+so a fresh instance can't be used before it's claimed. Once authenticated, the
+caller's role decides what the request may do (core/rbac.py maps method+path
+to a permission; a session without it gets 403, which is not a throttled
+failure). The static token acts as `admin`. Websockets can't set headers from a browser, so /ws endpoints accept
 the token as a WebSocket subprotocol (`Sec-WebSocket-Protocol: coa-auth, <token>`,
 which the UI uses -- it never appears in a URL or an access log) or, for older
 clients, as `?token=<token>`. /api/health and /api/config stay open for
@@ -32,6 +35,7 @@ from fastapi import HTTPException, Request, WebSocket, status
 
 from app.config import get_settings
 from app.core.auth_store import AuthStore
+from app.core.rbac import ANONYMOUS_OPEN, API_TOKEN_PRINCIPAL, Principal, required_permission
 
 audit = logging.getLogger("onboarding_agent.auth")
 
@@ -92,24 +96,39 @@ def _static_token_ok(presented: str | None) -> bool:
     return bool(expected) and bool(presented) and hmac.compare_digest(presented.encode(), expected.encode())
 
 
-def _token_ok(presented: str | None) -> bool:
+def principal_for(presented: str | None) -> Principal | None:
+    """Who the bearer is, or None when it's missing/invalid."""
     if not auth_enabled():
-        return True
+        return ANONYMOUS_OPEN
     if _static_token_ok(presented):
-        return True
-    return AuthStore.instance().session_valid(presented)
+        return API_TOKEN_PRINCIPAL
+    store = AuthStore.instance()
+    user = store.session_user(presented)
+    if user is None:
+        return None
+    return Principal(username=user.username, role=user.role, permissions=store.permissions_for(user.role),
+                     method="session", source=store.session_source(presented) or "local")
 
 
-def _check(presented: str | None, ip: str, what: str) -> int | None:
-    """None when authorized; otherwise the HTTP status to reject with."""
+def _token_ok(presented: str | None) -> bool:
+    return principal_for(presented) is not None
+
+
+def _check(presented: str | None, ip: str, what: str, permission: str | None = None) -> int | None:
+    """None when authorized; otherwise the HTTP status to reject with.
+    `permission` is what the request needs beyond being authenticated."""
     if not auth_enabled():
         return None
     wait = throttle.retry_after(ip)
     if wait:
         audit.warning("auth: rejected %s from %s -- locked out for another %ss", what, ip, wait)
         return status.HTTP_429_TOO_MANY_REQUESTS
-    if _token_ok(presented):
+    principal = principal_for(presented)
+    if principal is not None:
         throttle.record_success(ip)
+        if not principal.can(permission):
+            audit.warning("authz: %s (%s) denied %s -- needs %s", principal.username, principal.role, what, permission)
+            return status.HTTP_403_FORBIDDEN
         return None
     locked = throttle.record_failure(ip)
     if locked:
@@ -131,19 +150,33 @@ def auth_detail() -> str:
     return "Missing or invalid API token / session."
 
 
-async def require_token(request: Request) -> None:
+def permission_detail(permission: str | None) -> str:
+    return f"Your role doesn't allow this (needs '{permission}')."
+
+
+def authorize(request: Request) -> Principal:
+    """Authenticate the bearer and check the route's permission; raises the
+    matching HTTPException, returns the caller's Principal otherwise."""
     presented = bearer_token(request)
     ip = client_ip(request.headers, request.client)
-    code = _check(presented, ip, f"{request.method} {request.url.path}")
+    permission = required_permission(request.method, request.url.path)
+    code = _check(presented, ip, f"{request.method} {request.url.path}", permission)
     if code == status.HTTP_429_TOO_MANY_REQUESTS:
         raise HTTPException(
             status_code=code, detail="Too many failed authentication attempts; try again later.",
             headers={"Retry-After": str(throttle.retry_after(ip))},
         )
+    if code == status.HTTP_403_FORBIDDEN:
+        raise HTTPException(status_code=code, detail=permission_detail(permission))
     if code is not None:
         raise HTTPException(
             status_code=code, detail=auth_detail(), headers={"WWW-Authenticate": "Bearer"},
         )
+    return principal_for(presented) or ANONYMOUS_OPEN
+
+
+async def require_token(request: Request) -> None:
+    authorize(request)
 
 
 def _ws_token(websocket: WebSocket) -> tuple[str | None, str | None]:
@@ -162,13 +195,14 @@ async def websocket_authorized(websocket: WebSocket) -> str | None:
     none). Returns None after closing it when the token is missing/invalid."""
     token, subprotocol = _ws_token(websocket)
     ip = client_ip(websocket.headers, websocket.client)
-    code = _check(token, ip, f"websocket {websocket.url.path}")
+    code = _check(token, ip, f"websocket {websocket.url.path}", required_permission("GET", websocket.url.path))
     if code is None:
         await websocket.accept(subprotocol=subprotocol)
         return subprotocol or ""
-    # Accept, then close with an application code the UI recognizes as "log in again".
+    # Accept, then close with an application code the UI recognizes as "log in again" / "not allowed".
     await websocket.accept(subprotocol=subprotocol)
-    await websocket.close(code=4429 if code == status.HTTP_429_TOO_MANY_REQUESTS else 4401)
+    close_codes = {status.HTTP_429_TOO_MANY_REQUESTS: 4429, status.HTTP_403_FORBIDDEN: 4403}
+    await websocket.close(code=close_codes.get(code, 4401))
     return None
 
 

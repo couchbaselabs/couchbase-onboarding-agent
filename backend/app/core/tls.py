@@ -3,7 +3,9 @@ talks to a source or destination cluster.
 
 Verification is on by default. A connection can trust a specific CA (pasted PEM
 or a path inside the container) or, for throwaway test clusters only, opt out
-with tls_skip_verify -- which the validator reports as a warning.
+with tls_skip_verify -- which the validator reports as a warning. With neither,
+the CAs uploaded under Settings -> Certificates (core/certs.py) are trusted in
+addition to the system bundle.
 """
 from __future__ import annotations
 
@@ -34,7 +36,14 @@ def ca_file_for(config: _TlsConfig) -> str | None:
             path.write_text(pem.strip() + "\n")
             os.chmod(path, 0o600)
         return str(path)
-    return getattr(config, "ca_cert_path", None) or None
+    return getattr(config, "ca_cert_path", None) or default_ca_bundle()
+
+
+def default_ca_bundle() -> str | None:
+    """The merged system + uploaded-CA bundle, or None when nothing was uploaded."""
+    from app.core.certs import TrustStore  # noqa: PLC0415
+
+    return TrustStore.instance().bundle_path()
 
 
 def sdk_connection_string(connection_string: str, config: _TlsConfig) -> str:

@@ -24,6 +24,9 @@ TLS with a self-signed certificate the chart generates on first install (kept in
 browse to into the SANs with `--set frontend.tls.hostnames={ui.example.com}` /
 `--set frontend.tls.ipAddresses={10.0.0.5}`, or hand it your own `kubernetes.io/tls` Secret with
 `frontend.tls.existingSecret`. Plain HTTP on `frontend.service.httpPort` (8080) redirects to HTTPS.
+A certificate can also be uploaded in the running app (Settings → Certificates): with
+`frontend.tls.managedByApp` (default `true`) the backend gets a ServiceAccount allowed to update exactly that
+Secret and nginx reloads when the kubelet syncs it.
 
 The first start downloads the LLM (several GB); the assistant reports "waiting" until it's ready.
 Migrations work without it.

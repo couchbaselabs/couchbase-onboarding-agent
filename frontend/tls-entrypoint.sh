@@ -19,9 +19,30 @@ if [ "${TLS_ENABLED:-true}" != "true" ]; then
   exit 0
 fi
 
+# Reload nginx when the certificate files change: a certificate uploaded under
+# Settings -> Certificates lands here (shared volume, or the Kubernetes Secret
+# the backend updates and the kubelet re-syncs). Polling, no inotify needed.
+watch_cert() {
+  (
+    last=""
+    while sleep "${TLS_WATCH_INTERVAL_S:-10}"; do
+      cur="$(cat "$1" "$2" 2>/dev/null | sha256sum | cut -d' ' -f1)"
+      if [ -n "$last" ] && [ "$cur" != "$last" ] && [ -s "$1" ] && [ -s "$2" ]; then
+        if nginx -t >/dev/null 2>&1 && nginx -s reload; then
+          echo "[frontend] TLS certificate changed -- nginx reloaded"
+        else
+          echo "[frontend] TLS certificate changed but nginx -t failed; keeping the old one"
+        fi
+      fi
+      last="$cur"
+    done
+  ) &
+}
+
 CRT="$TLS_DIR/server.crt"; KEY="$TLS_DIR/server.key"
 if [ -s "$CRT" ] && [ -s "$KEY" ]; then
   echo "[frontend] using TLS certificate at $CRT"
+  watch_cert "$CRT" "$KEY"
   exit 0
 fi
 
@@ -52,4 +73,5 @@ openssl req -x509 -nodes -newkey rsa:2048 -days 825 \
   -subj "/CN=${CN:-localhost}/O=Couchbase Labs Onboarding Agent" \
   -addext "subjectAltName=$SAN" >/dev/null 2>&1
 chmod 600 "$KEY"
-echo "[frontend] self-signed certificate written to $CRT (the browser warns until you trust it or mount a real one)"
+echo "[frontend] self-signed certificate written to $CRT (the browser warns until you trust it, mount a real one, or upload one under Settings -> Certificates)"
+watch_cert "$CRT" "$KEY"

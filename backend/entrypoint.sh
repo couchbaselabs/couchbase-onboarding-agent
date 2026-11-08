@@ -13,6 +13,13 @@ if [ "$(id -u)" = "0" ]; then
   mkdir -p "${DATA_DIRS[@]}"
   find "${DATA_DIRS[@]}" \( ! -user "$APP_UID" -o ! -group "$APP_GID" \) \
     -exec chown "$APP_UID:$APP_GID" {} + 2>/dev/null || true
+  # The UI's TLS directory is shared with the frontend container (nginx runs as
+  # uid 101): nginx owns it, the app's group may write a certificate uploaded
+  # under Settings -> Certificates into it.
+  if [ -d /data/tls ]; then
+    chown 101:"$APP_GID" /data/tls 2>/dev/null || true
+    chmod 2770 /data/tls 2>/dev/null || true
+  fi
   export HOME=/tmp
   # Drop to the app user with Python (always present in this image) rather than
   # gosu/setpriv, which slim Debian images don't ship.

@@ -90,3 +90,8 @@ stable across upgrades; otherwise use the provided value or generate one.
 {{- randAlphaNum 48 -}}
 {{- end -}}
 {{- end -}}
+
+{{- define "coa.backendServiceAccount" -}}{{ include "coa.fullname" . }}-backend{{- end -}}
+{{- define "coa.tlsManagedByApp" -}}
+{{- if and .Values.frontend.tls.enabled .Values.frontend.tls.managedByApp }}true{{ end -}}
+{{- end -}}

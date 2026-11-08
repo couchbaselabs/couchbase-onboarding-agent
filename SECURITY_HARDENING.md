@@ -35,6 +35,9 @@ stays small and that the credentials it holds can't leak through it.
 | Dropped Linux capabilities | `cap_drop: [ALL]` on backend, frontend and the memory-init job; backend adds back only the five needed to fix volume ownership before dropping root; Helm drops all | CIS Docker §5, NIST AC-6 |
 | `no-new-privileges` | Set on every Compose service; `allowPrivilegeEscalation: false` in Helm | CIS Docker §5 |
 | Network exposure | Every published Compose port (UI 5173/5174, API 8000, Couchbase 8091-8096/11210, Ollama 11434) binds to `127.0.0.1`; Helm exposes only the UI Service/Ingress |
+| Access control | Role-based: built-in admin / operator / read_only plus custom roles over an 8-permission catalog, enforced per route on the API (`core/rbac.py`); last-admin guard; all user/role changes audited | NIST AC-2, AC-3, AC-6, PCI 4.0 §7 |
+| Directory sign-in | Optional LDAP/AD login over LDAPS/StartTLS with group → role mapping; bind credential encrypted at rest; local admin retained as break-glass | NIST IA-2, IA-5 |
+| Audit log export | Application + auth/RBAC audit logs forwarded to Splunk, Datadog, Elasticsearch/OpenSearch, Loki or syslog (TLS available) | NIST AU-6, AU-9, PCI 4.0 §10.3 |
 | Transport encryption | The UI is HTTPS by default: the frontend's nginx terminates TLS (TLS 1.2/1.3, HSTS) with a self-signed certificate unless you supply one; plain HTTP redirects to HTTPS except behind a TLS-terminating Ingress | PCI 4.0 §1, NIST SC-7, CIS |
 | Pinned, used dependencies | Every Python dependency pinned with `==`; `npm ci` from a lockfile | PCI 4.0 §6.3, NIST SI-2/CM-2 |
 | Secrets hygiene | `.env`, `*.pem`, `*.key`, `*.crt` git-ignored; `env.example` ships no real values; Compose refuses to start without `MEMORY_CB_PASSWORD` | PCI 4.0 §8.3.1, NIST IA-5 |

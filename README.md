@@ -382,6 +382,27 @@ deletes made at the source during the fallback period on sources whose change ca
   every rejected attempt is logged under `onboarding_agent.auth`. Without a token the API is open to anyone
   who can reach it -- acceptable only on a single-user machine with ports bound to localhost, which is what
   Compose does.
+- **Login, users and roles (RBAC).** The first visit sets the `admin` password (no default). Further local
+  users are created under **Settings → RBAC & Roles**, each with one role. Built-in roles: **admin** (everything),
+  **operator** (runs migrations end to end but can't change settings or users) and **read_only** (watches and asks
+  the assistant). Custom roles are any subset of the permission catalog (`migrations:read|write|rollback|delete`,
+  `sources:test`, `agent:chat`, `settings:write`, `users:manage`); the API enforces it on every route (`403`), the
+  UI hides what the role can't do. Users and roles live in `auth.json` next to the state file; every change is
+  audited under `onboarding_agent.auth`. The bottom-left of the sidebar shows who is signed in, with **Log out**.
+- **LDAP / Active Directory.** **Settings → LDAP** signs directory users in with their directory password (ldaps://
+  or StartTLS; service-account bind; user filter with `{username}`; groups from `memberOf` or a group search) and
+  maps **groups → roles** (first match wins, optional default role, otherwise denied). Local accounts keep working
+  alongside, so an admin can't be locked out. The bind password is stored encrypted. A **Test** button checks the
+  bind and shows the groups and role a given user would get before you save.
+- **Certificates.** **Settings → Certificates** has two parts: *Trusted CAs* -- CA certificates the app trusts in
+  addition to the public roots when it connects out (LDAPS, Couchbase/Capella behind a private CA, hosted LLM
+  endpoints through a TLS-inspecting proxy); and *this UI's HTTPS certificate* -- upload a certificate + key issued
+  by your CA to replace the self-signed one, and nginx reloads it within a minute (Compose: shared volume; Helm:
+  the backend updates the TLS Secret, `frontend.tls.managedByApp`).
+- **Log forwarding.** **Settings → Log forwarding** ships the application log and the auth/RBAC audit trail to
+  **Splunk** (HTTP Event Collector), **Datadog** Logs, **Elasticsearch / OpenSearch** (bulk API), **Grafana Loki**
+  or **syslog** (RFC 5424 over UDP/TCP/TLS) -- batched, best effort, with a test-event button and delivery
+  counters. Tokens and passwords are stored encrypted.
 - **Credentials.** Source and destination credentials are masked (`********`) in every API response and
   websocket frame, and encrypted at rest in the state file with a Fernet key (`STATE_ENCRYPTION_KEY`, or a
   key generated next to the state file on first start). Back up the key together with the state volume.

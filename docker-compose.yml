@@ -109,10 +109,14 @@ services:
       QWEN_MODEL_NAME: ${QWEN_MODEL_NAME:-qwen3:4b}
       QWEN_EMBEDDING_MODEL_NAME: ${QWEN_EMBEDDING_MODEL_NAME:-nomic-embed-text}
       MEMORY_EMBEDDING_DIMS: ${MEMORY_EMBEDDING_DIMS:-768}
+      # Where a UI certificate uploaded under Settings -> Certificates goes
+      # (the frontend's tls volume, mounted here too); nginx reloads it.
+      TLS_PUBLISH_DIR: /data/tls
     volumes:
       # Encrypted migration records, checkpoints and the generated state key.
       - state_data:/data/state
       - scratch_data:/data/scratch
+      - frontend_tls:/data/tls
       # cbbackupmgr archives for Couchbase-to-Couchbase migrations (one per migration).
       - cbbackupmgr_archives:/data/cbbackupmgr-archives
     ports:

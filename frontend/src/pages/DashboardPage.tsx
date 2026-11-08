@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { api } from "@/api/client";
 import type { MigrationRecord } from "@/api/types";
 import { useMigrationSocket } from "@/hooks/useMigrationSocket";
+import { useAuthSession } from "@/hooks/useAuthSession";
 import StatCard from "@/components/dashboard/StatCard";
 import { formatUtc } from "@/utils/time";
 import { phaseLabel, phaseTone, SOURCE_TYPE_LABELS } from "@/theme/tokens";
@@ -11,6 +12,7 @@ const ACTIVE = new Set(["validating", "migrating", "replicating", "verifying", "
 const ATTENTION = new Set(["failed", "validation_failed", "stopped"]);
 
 export default function DashboardPage() {
+  const { can } = useAuthSession();
   const [migrations, setMigrations] = useState<MigrationRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const { records: liveRecords } = useMigrationSocket("*");
@@ -41,9 +43,11 @@ export default function DashboardPage() {
             MongoDB, DynamoDB, Redis, Cassandra, Cosmos DB, and Couchbase onboarding into Couchbase Server or Capella.
           </p>
         </div>
-        <Link to="/new" className="btn btn-primary">
-          New migration
-        </Link>
+        {can("migrations:write") && (
+          <Link to="/new" className="btn btn-primary">
+            New migration
+          </Link>
+        )}
       </div>
 
       {loading && <div className="loading-note">Loading...</div>}
@@ -73,10 +77,16 @@ export default function DashboardPage() {
       {!loading && merged.length === 0 && (
         <div className="card empty-state">
           <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text)", marginBottom: 6 }}>No migrations yet</div>
-          <div style={{ marginBottom: 16 }}>Start one from a source database to Couchbase.</div>
-          <Link to="/new" className="btn btn-primary">
-            New migration
-          </Link>
+          <div style={{ marginBottom: 16 }}>
+            {can("migrations:write")
+              ? "Start one from a source database to Couchbase."
+              : "An operator or administrator can start one from a source database to Couchbase."}
+          </div>
+          {can("migrations:write") && (
+            <Link to="/new" className="btn btn-primary">
+              New migration
+            </Link>
+          )}
         </div>
       )}
 

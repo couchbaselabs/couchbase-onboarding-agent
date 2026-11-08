@@ -2,6 +2,8 @@ import { NavLink } from "react-router-dom";
 import { BrandMark } from "@/assets/CouchbaseLogo";
 import ThemeToggle from "@/components/common/ThemeToggle";
 import AgentStatusIndicator from "@/components/agent/AgentStatusIndicator";
+import SessionRow from "@/components/nav/SessionRow";
+import { useAuthSession } from "@/hooks/useAuthSession";
 import { useWizardStore } from "@/store/wizardStore";
 import type { SourceType } from "@/api/types";
 import { SOURCE_TYPE_SUPPORT } from "@/theme/tokens";
@@ -18,9 +20,11 @@ const SUPPORTED_SOURCES: { label: string; type: SourceType }[] = [
 ];
 
 /** Left navigation, laid out like the Couchbase Agent Operations Manager's:
- * brand row with the theme toggle, labelled sections, status at the bottom. */
+ * brand row with the theme toggle, labelled sections, status and the signed-in
+ * account (with Log out) at the bottom. */
 export default function Sidebar() {
   const wizardReset = useWizardStore((s) => s.reset);
+  const { can } = useAuthSession();
 
   return (
     <aside className="sidebar" aria-label="Main navigation">
@@ -42,16 +46,18 @@ export default function Sidebar() {
           </span>
           <span>Dashboard</span>
         </NavLink>
-        <NavLink
-          to="/new"
-          onClick={wizardReset}
-          className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}
-        >
-          <span className="nav-icon" aria-hidden="true">
-            ⊕
-          </span>
-          <span>New Migration</span>
-        </NavLink>
+        {can("migrations:write") && (
+          <NavLink
+            to="/new"
+            onClick={wizardReset}
+            className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}
+          >
+            <span className="nav-icon" aria-hidden="true">
+              ⊕
+            </span>
+            <span>New Migration</span>
+          </NavLink>
+        )}
         <NavLink to="/settings" className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}>
           <span className="nav-icon" aria-hidden="true">
             ⚙
@@ -80,6 +86,7 @@ export default function Sidebar() {
           migration can be rolled back.
         </div>
         <AgentStatusIndicator />
+        <SessionRow />
       </div>
     </aside>
   );

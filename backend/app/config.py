@@ -61,6 +61,14 @@ class Settings(BaseSettings):
     # to set the first password -- so nobody else can claim an exposed
     # instance before you do). Set to false to go back to token-only/open mode.
     admin_login_enabled: bool = True
+    # --- Serving certificate publishing (Settings -> Certificates) ---
+    # Where the frontend's nginx reads /etc/nginx/tls from, so a certificate
+    # uploaded in the UI reaches it: a shared directory (docker-compose mounts
+    # the frontend's tls volume at /data/tls) or a kubernetes.io/tls Secret in
+    # this pod's namespace (the Helm chart sets both when frontend.tls.managedByApp).
+    tls_publish_dir: str = ""
+    tls_publish_secret: str = ""
+    tls_publish_namespace: str = ""
     admin_password_min_length: int = 12
     # Browser sessions: idle timeout (sliding) and absolute lifetime. In-memory
     # and per-process, like the throttle -- a backend restart logs everyone out.

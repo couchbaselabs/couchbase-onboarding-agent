@@ -404,11 +404,176 @@ export interface AuthSession {
   token: string;
   /** epoch seconds; idle timeout, extended on every request */
   expires_at: number;
+  username: string;
+  role: string;
 }
+
+export type Permission =
+  | "migrations:read"
+  | "migrations:write"
+  | "migrations:rollback"
+  | "migrations:delete"
+  | "sources:test"
+  | "agent:chat"
+  | "settings:write"
+  | "users:manage";
 
 export interface AuthSessionInfo {
   authenticated: boolean;
   method: "open" | "token" | "session";
+  /** for sessions: a local user or a directory (LDAP) account */
+  source: "local" | "ldap";
+  username: string;
+  role: string;
+  permissions: Permission[];
   login_enabled: boolean;
   password_set_at: string | null;
+}
+
+export interface PermissionDef {
+  name: Permission;
+  description: string;
+}
+
+export interface RbacRole {
+  name: string;
+  description: string;
+  permissions: Permission[];
+  builtin: boolean;
+  /** how many users hold it */
+  users: number;
+}
+
+export interface RbacUser {
+  username: string;
+  role: string;
+  created_at: string;
+  password_set_at: string;
+  disabled: boolean;
+}
+
+// ---------------------------------------------------------------- certificates
+
+export interface CertInfo {
+  fingerprint: string;
+  subject: string;
+  issuer: string;
+  not_before: string;
+  not_after: string;
+  is_ca: boolean;
+  self_signed: boolean;
+  sans: string[];
+  expired: boolean;
+}
+
+export interface TrustedCerts {
+  certificates: CertInfo[];
+  bundle_path: string | null;
+}
+
+export interface ServingCertStatus {
+  installed: boolean;
+  certificate: CertInfo | null;
+  chain: CertInfo[];
+  installed_at?: string;
+  publish: { mode: "directory" | "kubernetes-secret" | "none"; target: string | null; note?: string };
+  published?: string;
+  note?: string;
+}
+
+// ---------------------------------------------------------------- LDAP
+
+export interface LdapRoleMapping {
+  group: string;
+  role: string;
+}
+
+export interface LdapConfig {
+  enabled: boolean;
+  server_url: string;
+  start_tls: boolean;
+  verify_tls: boolean;
+  bind_dn: string;
+  /** always "" on read; send "" to keep the stored password */
+  bind_password: string;
+  bind_password_set?: boolean;
+  user_base_dn: string;
+  user_filter: string;
+  username_attribute: string;
+  group_attribute: string;
+  group_base_dn: string;
+  group_filter: string;
+  role_mappings: LdapRoleMapping[];
+  default_role: string;
+  timeout_s: number;
+}
+
+export interface LdapPreset {
+  label: string;
+  user_filter: string;
+  group_attribute: string;
+  group_filter: string;
+  username_attribute: string;
+}
+
+export interface LdapSettingsResponse {
+  config: LdapConfig;
+  presets: Record<string, LdapPreset>;
+  roles: string[];
+}
+
+export interface LdapTestResult {
+  ok: boolean;
+  connection?: { bound_as: string };
+  user?: { dn: string; groups: string[]; role: string | null; display_name: string } | null;
+  login?: "ok" | "failed";
+  message?: string;
+}
+
+// ---------------------------------------------------------------- log forwarding
+
+export type LogDestination = "splunk_hec" | "datadog" | "elasticsearch" | "loki" | "syslog";
+
+export interface LogDestinationField {
+  key: string;
+  label: string;
+  placeholder?: string;
+  hint?: string;
+  default?: string;
+  required?: boolean;
+  secret?: boolean;
+  options?: string[];
+}
+
+export interface LogForwardConfig {
+  enabled: boolean;
+  destination: LogDestination;
+  settings: Record<string, string>;
+  /** secret keys that have a stored value (sent back as "") */
+  secrets_set?: string[];
+  min_level: "DEBUG" | "INFO" | "WARNING" | "ERROR";
+  include_audit: boolean;
+  include_app: boolean;
+  batch_size: number;
+  flush_interval_s: number;
+  hostname: string;
+  extra_fields: Record<string, string>;
+}
+
+export interface LogForwardStatus {
+  active: boolean;
+  destination: string | null;
+  sent: number;
+  failed: number;
+  dropped: number;
+  queued: number;
+  last_error: string | null;
+  last_success: string | null;
+}
+
+export interface LogForwardSettingsResponse {
+  config: LogForwardConfig;
+  destinations: Record<LogDestination, { label: string; fields: LogDestinationField[] }>;
+  levels: string[];
+  status: LogForwardStatus;
 }

@@ -1,40 +1,110 @@
-import { useEffect, useState } from "react";
-import { api, ApiError, setToken } from "@/api/client";
-import type { AuthSessionInfo } from "@/api/types";
+import { useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import { api, ApiError } from "@/api/client";
+import type { AuthSessionInfo, Permission } from "@/api/types";
 import AssistantModelForm from "@/components/settings/AssistantModelForm";
+import RbacSettings from "@/components/settings/RbacSettings";
+import LdapSettings from "@/components/settings/LdapSettings";
+import CertificateSettings from "@/components/settings/CertificateSettings";
+import LogForwardingSettings from "@/components/settings/LogForwardingSettings";
+import { logout, useAuthSession } from "@/hooks/useAuthSession";
+
+type TabId = "model" | "account" | "rbac" | "ldap" | "certificates" | "logs";
+
+interface Tab {
+  id: TabId;
+  label: string;
+  blurb: string;
+  /** permission needed to see the tab; undefined = everyone signed in */
+  needs?: Permission;
+  /** only for password sessions (not the API token / auth off) */
+  sessionOnly?: boolean;
+}
+
+const TABS: Tab[] = [
+  { id: "model", label: "Assistant model", blurb: "Which model answers in the \"Ask the agent\" panel.", needs: "settings:write" },
+  { id: "account", label: "Account", blurb: "Your password and session.", sessionOnly: true },
+  { id: "rbac", label: "RBAC & Roles", blurb: "Who can sign in and what each role may do.", needs: "users:manage" },
+  { id: "ldap", label: "LDAP", blurb: "Sign in with a directory (Active Directory, OpenLDAP) and map groups to roles.", needs: "settings:write" },
+  { id: "certificates", label: "Certificates", blurb: "CAs this app trusts, and the certificate its HTTPS UI serves.", needs: "settings:write" },
+  { id: "logs", label: "Log forwarding", blurb: "Ship the application and audit logs to your log platform.", needs: "settings:write" },
+];
 
 export default function SettingsPage() {
-  const [session, setSession] = useState<AuthSessionInfo | null>(null);
+  const { session, can } = useAuthSession();
+  const [params, setParams] = useSearchParams();
 
-  useEffect(() => {
-    api.authSession().then(setSession).catch(() => setSession(null));
-  }, []);
+  const tabs = useMemo(
+    () =>
+      TABS.filter((t) => (t.needs ? can(t.needs) : true)).filter((t) =>
+        t.sessionOnly ? !session || session.method === "session" : true,
+      ),
+    [session, can],
+  );
+  const requested = params.get("tab") as TabId | null;
+  const active = tabs.find((t) => t.id === requested) ?? tabs[0];
 
   return (
-    <div className="page-narrow">
+    <div className="page-narrow settings-page">
       <div className="page-header">
         <div>
           <h1 className="page-title">Settings</h1>
-          <p className="page-subtitle">The assistant's model and this instance's administrator login.</p>
+          <p className="page-subtitle">{active?.blurb ?? "Nothing here needs your attention."}</p>
         </div>
       </div>
 
-      <div className="stack">
-        <section className="card">
-          <div className="card-title">Assistant model</div>
-          <p className="field-hint" style={{ marginBottom: 14 }}>
-            Which model answers in the "Ask the agent" panel. The bundled local model keeps prompts on this host; a
-            hosted provider uses the endpoint and credentials you supply here.
-          </p>
-          <AssistantModelForm />
-        </section>
+      <div className="settings-layout">
+        <nav className="settings-tabs" aria-label="Settings sections">
+          {tabs.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              className={`settings-tab${active?.id === t.id ? " active" : ""}`}
+              onClick={() => setParams({ tab: t.id })}
+            >
+              {t.label}
+            </button>
+          ))}
+        </nav>
 
-        {session?.login_enabled && (
-          <section className="card">
-            <div className="card-title">Administrator password</div>
-            <ChangePassword session={session} />
-          </section>
-        )}
+        <div className="settings-body">
+          {active?.id === "model" && (
+            <section className="card">
+              <div className="card-title">Assistant model</div>
+              <p className="field-hint" style={{ marginBottom: 14 }}>
+                Which model answers in the "Ask the agent" panel. The bundled local model keeps prompts on this host; a
+                hosted provider uses the endpoint and credentials you supply here.
+              </p>
+              <AssistantModelForm />
+            </section>
+          )}
+          {active?.id === "account" && session && (
+            <section className="card">
+              <div className="card-title">
+                Your password{" "}
+                <span className="field-hint" style={{ fontWeight: 400 }}>
+                  -- signed in as <strong>{session.username}</strong> ({session.role.replace("_", " ")})
+                </span>
+              </div>
+              {session.source === "ldap" ? (
+                <p className="field-hint">You signed in with a directory (LDAP) account; change your password in your directory.</p>
+              ) : session.login_enabled ? (
+                <ChangePassword session={session} />
+              ) : (
+                <p className="field-hint">The password login is disabled for this deployment (ADMIN_LOGIN_ENABLED=false).</p>
+              )}
+            </section>
+          )}
+          {active?.id === "rbac" && <RbacSettings />}
+          {active?.id === "ldap" && <LdapSettings />}
+          {active?.id === "certificates" && <CertificateSettings />}
+          {active?.id === "logs" && <LogForwardingSettings />}
+          {!active && (
+            <section className="card">
+              <p className="field-hint">Your role has no settings to manage here.</p>
+            </section>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -105,19 +175,8 @@ function ChangePassword({ session }: { session: AuthSessionInfo }) {
         <button className="btn btn-primary" type="submit" disabled={busy || !current || next.length < 12 || confirm !== next}>
           {busy ? "Saving..." : "Change password"}
         </button>
-        <button
-          type="button"
-          className="btn btn-secondary"
-          onClick={async () => {
-            try {
-              await api.authLogout();
-            } finally {
-              setToken(null);
-              window.location.reload();
-            }
-          }}
-        >
-          Sign out
+        <button type="button" className="btn btn-secondary" onClick={logout}>
+          Log out
         </button>
       </div>
     </form>

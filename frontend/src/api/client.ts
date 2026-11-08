@@ -3,6 +3,17 @@ import type {
   AgentStatusResponse,
   AuthSession,
   AuthSessionInfo,
+  PermissionDef,
+  RbacRole,
+  RbacUser,
+  LdapConfig,
+  LdapSettingsResponse,
+  LdapTestResult,
+  LogForwardConfig,
+  LogForwardSettingsResponse,
+  LogForwardStatus,
+  ServingCertStatus,
+  TrustedCerts,
   LlmProviderConfig,
   LlmProviderSettings,
   LlmProviderTestResult,
@@ -107,6 +118,8 @@ export interface PublicConfig {
   login_enabled?: boolean;
   /** No administrator password yet: show the first-run setup. */
   setup_required?: boolean;
+  /** Directory (LDAP) sign-in is configured and on. */
+  ldap_enabled?: boolean;
   /** Setup must also present API_AUTH_TOKEN. */
   bootstrap_token_required?: boolean;
   version: string;
@@ -183,9 +196,51 @@ export const api = {
   // --- admin login ---
   authSetup: (password: string, bootstrapToken?: string) =>
     post<AuthSession>("/api/auth/setup", { password, bootstrap_token: bootstrapToken ?? "" }),
-  authLogin: (password: string) => post<AuthSession>("/api/auth/login", { password }),
+  authLogin: (username: string, password: string) =>
+    post<AuthSession>("/api/auth/login", { username, password }),
   authLogout: () => post<void>("/api/auth/logout"),
   authSession: () => request<AuthSessionInfo>("/api/auth/session"),
+  // RBAC (users:manage)
+  listPermissions: () => request<PermissionDef[]>("/api/auth/permissions"),
+  listRoles: () => request<RbacRole[]>("/api/auth/roles"),
+  createRole: (body: { name: string; description: string; permissions: string[] }) =>
+    post<RbacRole>("/api/auth/roles", body),
+  updateRole: (name: string, body: { description?: string; permissions?: string[] }) =>
+    request<RbacRole>(`/api/auth/roles/${encodeURIComponent(name)}`, { method: "PUT", body: JSON.stringify(body) }),
+  deleteRole: (name: string) => request<void>(`/api/auth/roles/${encodeURIComponent(name)}`, { method: "DELETE" }),
+  listUsers: () => request<RbacUser[]>("/api/auth/users"),
+  createUser: (body: { username: string; password: string; role: string }) => post<RbacUser>("/api/auth/users", body),
+  updateUser: (username: string, body: { role?: string; disabled?: boolean; password?: string }) =>
+    request<RbacUser>(`/api/auth/users/${encodeURIComponent(username)}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteUser: (username: string) =>
+    request<void>(`/api/auth/users/${encodeURIComponent(username)}`, { method: "DELETE" }),
+  // Certificates (settings:write)
+  trustedCerts: () => request<TrustedCerts>("/api/settings/certificates/trusted"),
+  addTrustedCert: (pem: string) => post<TrustedCerts & { added: unknown[] }>("/api/settings/certificates/trusted", { pem }),
+  removeTrustedCert: (fingerprint: string) =>
+    request<void>(`/api/settings/certificates/trusted/${fingerprint}`, { method: "DELETE" }),
+  servingCert: () => request<ServingCertStatus>("/api/settings/certificates/server"),
+  installServingCert: (certificate_pem: string, private_key_pem: string) =>
+    request<ServingCertStatus>("/api/settings/certificates/server", {
+      method: "PUT",
+      body: JSON.stringify({ certificate_pem, private_key_pem }),
+    }),
+  removeServingCert: () => request<ServingCertStatus>("/api/settings/certificates/server", { method: "DELETE" }),
+  // LDAP (settings:write)
+  ldapSettings: () => request<LdapSettingsResponse>("/api/settings/ldap"),
+  saveLdap: (cfg: LdapConfig) =>
+    request<{ config: LdapConfig }>("/api/settings/ldap", { method: "PUT", body: JSON.stringify(cfg) }),
+  testLdap: (cfg: LdapConfig, test_username?: string, test_password?: string) =>
+    post<LdapTestResult>("/api/settings/ldap/test", { ...cfg, test_username, test_password }),
+  // Log forwarding (settings:write)
+  logForwarding: () => request<LogForwardSettingsResponse>("/api/settings/log-forwarding"),
+  saveLogForwarding: (cfg: LogForwardConfig) =>
+    request<{ config: LogForwardConfig; status: LogForwardStatus }>("/api/settings/log-forwarding", {
+      method: "PUT",
+      body: JSON.stringify(cfg),
+    }),
+  testLogForwarding: (cfg: LogForwardConfig) =>
+    post<{ ok: boolean; destination: string; ms: number }>("/api/settings/log-forwarding/test", cfg),
   changePassword: (currentPassword: string, newPassword: string) =>
     post<void>("/api/auth/password", { current_password: currentPassword, new_password: newPassword }),
 

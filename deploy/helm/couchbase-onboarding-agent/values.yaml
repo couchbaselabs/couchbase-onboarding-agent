@@ -136,6 +136,10 @@ frontend:
     ipAddresses: []
     # Days of validity for the generated certificate.
     days: 825
+    # Let the backend replace the certificate from Settings -> Certificates:
+    # gives it a ServiceAccount allowed to update exactly the TLS Secret above
+    # (nginx reloads when the kubelet syncs the new files, within ~1 minute).
+    managedByApp: true
   nodeSelector: {}
   tolerations: []
   affinity: {}
