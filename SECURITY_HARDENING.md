@@ -34,7 +34,8 @@ stays small and that the credentials it holds can't leak through it.
 | Non-root containers | Backend runs as uid 10001 (drops privileges in `entrypoint.sh`), UI runs `nginx-unprivileged` on 8080; Helm sets `runAsNonRoot`, `seccompProfile: RuntimeDefault` | CIS Docker §4, NIST SP 800-190 / AC-6 |
 | Dropped Linux capabilities | `cap_drop: [ALL]` on backend, frontend and the memory-init job; backend adds back only the five needed to fix volume ownership before dropping root; Helm drops all | CIS Docker §5, NIST AC-6 |
 | `no-new-privileges` | Set on every Compose service; `allowPrivilegeEscalation: false` in Helm | CIS Docker §5 |
-| Network exposure | Every published Compose port (UI 5173, API 8000, Couchbase 8091-8096/11210, Ollama 11434) binds to `127.0.0.1`; Helm exposes only the UI Service/Ingress | PCI 4.0 §1, NIST SC-7, CIS |
+| Network exposure | Every published Compose port (UI 5173/5174, API 8000, Couchbase 8091-8096/11210, Ollama 11434) binds to `127.0.0.1`; Helm exposes only the UI Service/Ingress |
+| Transport encryption | The UI is HTTPS by default: the frontend's nginx terminates TLS (TLS 1.2/1.3, HSTS) with a self-signed certificate unless you supply one; plain HTTP redirects to HTTPS except behind a TLS-terminating Ingress | PCI 4.0 §1, NIST SC-7, CIS |
 | Pinned, used dependencies | Every Python dependency pinned with `==`; `npm ci` from a lockfile | PCI 4.0 §6.3, NIST SI-2/CM-2 |
 | Secrets hygiene | `.env`, `*.pem`, `*.key`, `*.crt` git-ignored; `env.example` ships no real values; Compose refuses to start without `MEMORY_CB_PASSWORD` | PCI 4.0 §8.3.1, NIST IA-5 |
 

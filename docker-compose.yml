@@ -134,8 +134,20 @@ services:
     cap_drop: [ALL]   # nginx-unprivileged listens on 8080; nothing needs a capability
     environment:
       BACKEND_URL: http://backend:8000
+      # HTTPS by default: nginx terminates TLS on 8443 with the certificate in
+      # /etc/nginx/tls (self-signed, generated on first start for TLS_HOSTNAME,
+      # kept in the frontend_tls volume). Put your own server.crt/server.key
+      # into certs/tls/ and uncomment the bind mount below to use them.
+      # HTTPS_PORT is the published port, so the http->https redirect works.
+      TLS_ENABLED: ${TLS_ENABLED:-true}
+      TLS_HOSTNAME: ${TLS_HOSTNAME:-localhost}
+      HTTPS_PORT: ${UI_PORT:-5173}
     ports:
-      - "127.0.0.1:5173:8080"
+      - "127.0.0.1:${UI_PORT:-5173}:8443"
+      - "127.0.0.1:${UI_HTTP_PORT:-5174}:8080"   # redirects to https://localhost:${UI_PORT}
+    volumes:
+      - frontend_tls:/etc/nginx/tls
+      # - ./certs/tls:/etc/nginx/tls:ro
     depends_on:
       - backend
     networks: [coa-net]
@@ -145,6 +157,7 @@ networks:
     driver: bridge
 
 volumes:
+  frontend_tls:
   couchbase_memory_data:
   ollama_data:
   state_data:

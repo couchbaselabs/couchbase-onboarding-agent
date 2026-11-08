@@ -48,6 +48,11 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "coa.frontendService" -}}{{ include "coa.fullname" . }}-frontend{{- end -}}
 {{- define "coa.llmService" -}}{{ include "coa.fullname" . }}-llm{{- end -}}
 {{- define "coa.memoryService" -}}{{ include "coa.fullname" . }}-memory{{- end -}}
+{{- define "coa.frontendTlsSecret" -}}
+{{- default (printf "%s-frontend-tls" (include "coa.fullname" .)) .Values.frontend.tls.existingSecret -}}
+{{- end -}}
+{{/* Port the browser reaches the UI on: used for the http->https redirect. */}}
+{{- define "coa.frontendHttpsPort" -}}{{ .Values.frontend.service.port }}{{- end -}}
 
 {{- define "coa.llmUrl" -}}
 {{- if .Values.llm.externalUrl -}}

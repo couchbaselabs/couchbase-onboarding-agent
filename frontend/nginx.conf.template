@@ -1,66 +1,39 @@
 # Serves the built UI and proxies the API and websockets to the backend, so the
 # browser talks to one origin (no CORS, no API URL baked into the bundle).
-# BACKEND_URL is substituted at container start by the nginx image's envsubst.
+#
+# HTTPS is the default: tls.conf.template adds a TLS server on 8443 (certificate
+# from /etc/nginx/tls/server.{crt,key}, or a self-signed one generated at start
+# by tls-entrypoint.sh), and this plain-HTTP server on 8080 redirects to it.
+# The redirect is skipped when a reverse proxy / Ingress already terminated TLS
+# (X-Forwarded-Proto: https) and for /healthz, so Ingress deployments and the
+# container healthcheck keep using 8080 unchanged. TLS_ENABLED=false turns the
+# TLS server and the redirect off (plain HTTP behind your own terminator).
+#
+# ${BACKEND_URL}, ${TLS_ENABLED}, ${HTTPS_PORT} are substituted at container
+# start by the nginx image's envsubst; HTTPS_PORT is the port the *browser*
+# uses (the published / Service port), so the redirect lands on the right one.
+
+map "${TLS_ENABLED}:$http_x_forwarded_proto:$request_uri" $redirect_to_https {
+    default                     0;
+    "~^true:https:"             0;   # TLS already terminated in front of us
+    "~^true:[^:]*:/healthz$"    0;   # probes / HEALTHCHECK
+    "~^true:"                   1;
+}
+
 server {
     listen 8080;
     server_name _;
-    root /usr/share/nginx/html;
-    client_max_body_size 5m;
-    server_tokens off;
-    # TLS is terminated in front of this container (ingress / reverse proxy);
-    # it only sends HSTS when the request actually arrived over HTTPS there.
-    # nginx drops a header whose value is empty, so plain-HTTP requests get none.
-    # Repeated inside the locations below: a location with its own add_header
-    # lines does not inherit these.
+
+    if ($redirect_to_https) {
+        return 301 https://$host:${HTTPS_PORT}$request_uri;
+    }
+
+    # Only send HSTS when the request actually arrived over HTTPS at the proxy
+    # in front of us. nginx drops a header whose value is empty.
     set $hsts "";
     if ($http_x_forwarded_proto = "https") {
         set $hsts "max-age=31536000; includeSubDomains";
     }
-    add_header Strict-Transport-Security $hsts always;
 
-    location /api/ {
-        proxy_pass ${BACKEND_URL};
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 300s;
-    }
-
-    location /ws/ {
-        # Older clients may still pass the API token as ?token=; keep it out of
-        # the access log (the UI itself sends it as a websocket subprotocol).
-        access_log off;
-        proxy_pass ${BACKEND_URL};
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 1h;
-    }
-
-    location = /healthz {
-        access_log off;
-        default_type text/plain;
-        return 200 "ok\n";
-    }
-
-    location /assets/ {
-        add_header Cache-Control "public, max-age=31536000, immutable" always;
-        add_header X-Content-Type-Options nosniff always;
-        add_header Strict-Transport-Security $hsts always;
-    }
-
-    location / {
-        try_files $uri /index.html;
-        add_header Cache-Control "no-cache" always;
-        add_header Strict-Transport-Security $hsts always;
-        add_header X-Content-Type-Options nosniff always;
-        add_header X-Frame-Options DENY always;
-        add_header Referrer-Policy no-referrer always;
-        add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()" always;
-        add_header Cross-Origin-Opener-Policy same-origin always;
-        add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' ws: wss:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'" always;
-    }
+    include /etc/nginx/conf.d/site.inc;
 }

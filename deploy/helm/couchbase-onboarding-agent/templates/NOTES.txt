@@ -11,8 +11,17 @@ Couchbase Onboarding Agent {{ .Chart.AppVersion }} is installed.
    http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}/
 {{- end }}
 {{- else }}
+{{- if .Values.frontend.tls.enabled }}
+   kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "coa.frontendService" . }} 8443:{{ .Values.frontend.service.port }}
+   then browse to https://localhost:8443
+{{- if not .Values.frontend.tls.existingSecret }}
+   (self-signed certificate: the browser warns until you trust it, or set
+   frontend.tls.existingSecret to a kubernetes.io/tls Secret of your own)
+{{- end }}
+{{- else }}
    kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "coa.frontendService" . }} 8080:{{ .Values.frontend.service.port }}
    then browse to http://localhost:8080
+{{- end }}
 {{- end }}
 
 3. Back up the state volume ({{ include "coa.fullname" . }}-state) and the

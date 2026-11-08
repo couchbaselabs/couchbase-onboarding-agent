@@ -1,5 +1,7 @@
-# Build the UI, then serve it with an unprivileged nginx that also proxies
-# /api and /ws to the backend (see nginx.conf.template).
+# Build the UI, then serve it with an unprivileged nginx that terminates TLS
+# (HTTPS on 8443 by default, HTTP on 8080 redirects to it) and proxies /api and
+# /ws to the backend (see nginx.conf.template, tls.conf.template,
+# tls-entrypoint.sh).
 FROM node:20-slim AS build
 WORKDIR /app
 
@@ -27,11 +29,24 @@ ENV VITE_API_BASE_URL=${VITE_API_BASE_URL}
 # here; COPY --from keeps these modes (and needs no BuildKit-only --chmod).
 RUN npm run build && \
     chmod -R a+rX dist && \
-    chmod 0644 nginx.conf.template
+    chmod 0644 nginx.conf.template tls.conf.template site.inc.template && \
+    chmod 0755 tls-entrypoint.sh
 
 FROM nginxinc/nginx-unprivileged:1.27-alpine AS serve
-ENV BACKEND_URL=http://backend:8000
+# openssl for the self-signed fallback; /etc/nginx/tls writable by the nginx
+# user so the generated pair can live there when nothing is mounted.
+USER root
+RUN apk add --no-cache openssl && \
+    mkdir -p /etc/nginx/tls && chown 101:0 /etc/nginx/tls && chmod 0770 /etc/nginx/tls
+USER 101
+ENV BACKEND_URL=http://backend:8000 \
+    TLS_ENABLED=true \
+    HTTPS_PORT=8443 \
+    TLS_HOSTNAME=localhost
 COPY --from=build /app/nginx.conf.template /etc/nginx/templates/default.conf.template
+COPY --from=build /app/tls.conf.template   /etc/nginx/templates/tls.conf.template
+COPY --from=build /app/site.inc.template   /etc/nginx/templates/site.inc.template
+COPY --from=build /app/tls-entrypoint.sh   /docker-entrypoint.d/25-tls.sh
 COPY --from=build /app/dist /usr/share/nginx/html
-EXPOSE 8080
+EXPOSE 8080 8443
 HEALTHCHECK --interval=30s --timeout=3s CMD wget -qO- http://127.0.0.1:8080/healthz || exit 1

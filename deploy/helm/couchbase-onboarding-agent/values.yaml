@@ -114,11 +114,35 @@ frontend:
       drop: ["ALL"]
   service:
     type: ClusterIP
-    port: 80
+    # The UI port: HTTPS when tls.enabled (default), plain HTTP otherwise. With
+    # TLS on, the Service also exposes plain HTTP on httpPort, which redirects
+    # browsers to HTTPS and is what an Ingress (which terminates TLS itself)
+    # should target -- the Ingress template already does.
+    port: 443
+    httpPort: 8080
+  # HTTPS by default: the frontend's nginx terminates TLS on its own, so the UI
+  # is https:// even without an Ingress (e.g. a LoadBalancer/NodePort Service).
+  tls:
+    enabled: true
+    # A kubernetes.io/tls Secret (tls.crt / tls.key) you manage. Leave empty to
+    # have the chart generate a self-signed certificate on first install and
+    # keep it across upgrades (Secret <release>-frontend-tls, resource-policy keep).
+    existingSecret: ""
+    # Subject alternative names for the generated certificate: the hostnames
+    # and IP addresses users will browse to. localhost / 127.0.0.1 are always
+    # included. Changing these does not rotate an already generated cert --
+    # delete the Secret to regenerate.
+    hostnames: []
+    ipAddresses: []
+    # Days of validity for the generated certificate.
+    days: 825
   nodeSelector: {}
   tolerations: []
   affinity: {}
 
+# An Ingress terminates TLS itself and talks plain HTTP to the frontend's
+# httpPort (no redirect loop: the frontend trusts X-Forwarded-Proto). Set
+# frontend.tls.enabled=false if you don't want the pod to carry a certificate.
 ingress:
   enabled: false
   className: ""

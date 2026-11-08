@@ -1,0 +1,19 @@
+# HTTPS server (the default entry point). Removed at container start when
+# TLS_ENABLED=false -- see tls-entrypoint.sh, which also generates a self-signed
+# certificate when none is mounted at /etc/nginx/tls.
+server {
+    listen 8443 ssl;
+    http2 on;
+    server_name _;
+
+    ssl_certificate     /etc/nginx/tls/server.crt;
+    ssl_certificate_key /etc/nginx/tls/server.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    set $hsts "max-age=31536000; includeSubDomains";
+
+    include /etc/nginx/conf.d/site.inc;
+}

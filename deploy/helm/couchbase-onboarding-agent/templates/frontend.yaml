@@ -32,9 +32,21 @@ spec:
           env:
             - name: BACKEND_URL
               value: {{ printf "http://%s:%v" (include "coa.backendService" .) .Values.backend.service.port | quote }}
+            - name: TLS_ENABLED
+              value: {{ .Values.frontend.tls.enabled | quote }}
+            {{- if .Values.frontend.tls.enabled }}
+            - name: HTTPS_PORT
+              value: {{ include "coa.frontendHttpsPort" . | quote }}
+            - name: TLS_HOSTNAME
+              value: {{ concat .Values.frontend.tls.hostnames .Values.frontend.tls.ipAddresses | join "," | default "localhost" | quote }}
+            {{- end }}
           ports:
             - name: http
               containerPort: 8080
+            {{- if .Values.frontend.tls.enabled }}
+            - name: https
+              containerPort: 8443
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /healthz
@@ -46,6 +58,23 @@ spec:
             periodSeconds: 20
           resources:
             {{- toYaml .Values.frontend.resources | nindent 12 }}
+          {{- if .Values.frontend.tls.enabled }}
+          volumeMounts:
+            - name: tls
+              mountPath: /etc/nginx/tls
+              readOnly: true
+          {{- end }}
+      {{- if .Values.frontend.tls.enabled }}
+      volumes:
+        - name: tls
+          secret:
+            secretName: {{ include "coa.frontendTlsSecret" . }}
+            items:
+              - key: tls.crt
+                path: server.crt
+              - key: tls.key
+                path: server.key
+      {{- end }}
       {{- with .Values.frontend.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -72,6 +101,15 @@ spec:
     {{- include "coa.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: frontend
   ports:
+    {{- if .Values.frontend.tls.enabled }}
+    - name: https
+      port: {{ .Values.frontend.service.port }}
+      targetPort: https
+    - name: http
+      port: {{ .Values.frontend.service.httpPort }}
+      targetPort: http
+    {{- else }}
     - name: http
       port: {{ .Values.frontend.service.port }}
       targetPort: http
+    {{- end }}

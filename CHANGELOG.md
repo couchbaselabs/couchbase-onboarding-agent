@@ -3,6 +3,16 @@
 ## Unreleased
 
 ### Added
+- **HTTPS by default for the UI.** The frontend's nginx now terminates TLS itself (8443) and
+  redirects plain HTTP (8080) to it, except when a reverse proxy / Ingress already terminated TLS
+  (`X-Forwarded-Proto: https`) and for `/healthz`. With no certificate mounted at
+  `/etc/nginx/tls/server.{crt,key}` it generates a self-signed one at start (SANs from
+  `TLS_HOSTNAME`). Compose publishes `https://localhost:5173` (`5174` redirects) and keeps the
+  generated cert in the `frontend_tls` volume; `certs/tls/` + a bind mount takes your own.
+  The Helm chart (1.1.0) adds `frontend.tls.{enabled,existingSecret,hostnames,ipAddresses,days}`
+  (on by default, generated cert kept in `<release>-frontend-tls`), `frontend.service.port` now
+  defaults to 443 with plain HTTP on `frontend.service.httpPort` (8080) for Ingress backends.
+  `TLS_ENABLED=false` restores the previous plain-HTTP behaviour.
 - **GPU auto-detection for the local LLM.** `./scripts/compose.sh` wraps `docker compose` and
   picks the right override for the machine it runs on: NVIDIA (`docker-compose.gpu.yml`), AMD
   ROCm (new `docker-compose.rocm.yml`, ROCm Ollama image via `OLLAMA_IMAGE_TAG` build arg) or,

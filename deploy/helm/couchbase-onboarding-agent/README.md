@@ -15,8 +15,15 @@ Get the generated API token (the UI asks for it) and open the UI:
 ```bash
 kubectl get secret onboarding-couchbase-onboarding-agent-secrets -n migrations \
   -o jsonpath='{.data.API_AUTH_TOKEN}' | base64 -d; echo
-kubectl port-forward -n migrations svc/onboarding-couchbase-onboarding-agent-frontend 8080:80
+kubectl port-forward -n migrations svc/onboarding-couchbase-onboarding-agent-frontend 8443:443
 ```
+
+Then browse to <https://localhost:8443>. The UI is HTTPS by default: the frontend's nginx terminates
+TLS with a self-signed certificate the chart generates on first install (kept in Secret
+`<release>-frontend-tls`), so the browser warns until you trust it. Put the names and IPs users will
+browse to into the SANs with `--set frontend.tls.hostnames={ui.example.com}` /
+`--set frontend.tls.ipAddresses={10.0.0.5}`, or hand it your own `kubernetes.io/tls` Secret with
+`frontend.tls.existingSecret`. Plain HTTP on `frontend.service.httpPort` (8080) redirects to HTTPS.
 
 The first start downloads the LLM (several GB); the assistant reports "waiting" until it's ready.
 Migrations work without it.
@@ -28,7 +35,8 @@ Migrations work without it.
 | backend | Deployment (1 replica, `Recreate`) + Service | Owns the migration state file; keep a single replica |
 | state | PVC (RWO, kept on uninstall) | Encrypted migration records, checkpoints, fallback state |
 | archives | PVC (RWO) | `cbbackupmgr` archives for Couchbase-source bulk copies |
-| frontend | Deployment + Service | nginx on 8080, proxies `/api` and `/ws` to the backend |
+| frontend | Deployment + Service | nginx: HTTPS on 8443 (`frontend.tls`), HTTP on 8080 (redirects, or serves behind an Ingress); proxies `/api` and `/ws` to the backend |
+| frontend-tls | Secret (`kubernetes.io/tls`, kept on uninstall) | Generated self-signed certificate; skipped with `frontend.tls.existingSecret` |
 | llm | Deployment + PVC + Service | `llm.enabled`, skipped when `llm.externalUrl` is set |
 | memory | StatefulSet + headless Service + init Job | `memory.bundled.enabled`; evaluation only (see licensing) |
 | secrets | Secret (kept on uninstall) | API token, credential encryption key, memory password, Capella token |
@@ -59,6 +67,9 @@ ingress:
   tls:
     - secretName: onboarding-tls
       hosts: [onboarding.example.com]
+frontend:
+  tls:
+    enabled: false                       # the Ingress terminates TLS; the pod can stay plain HTTP
 backend:
   persistence:
     state:
